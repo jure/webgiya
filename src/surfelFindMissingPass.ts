@@ -42,7 +42,6 @@ import {
   surfel_grid_c4_to_hash,
   surfel_radius_for_pos,
   surfel_grid_coord_to_hash,
-  surfel_grid_coord_center,
   snap_to_surfel_grid_origin,
 } from './surfelHashGrid';
 
@@ -55,7 +54,6 @@ import {
   SURFEL_KILL_SIGNAL,
   SURFEL_LIFE_RECYCLE,
   SURFEL_RADIUS_OVERSCALE,
-  TOTAL_CELLS,
 } from './constants';
 import { SURFEL_NORMAL_DIRECTION_SQUISH } from './constants';
 import { pack_vertex, Vertex, VertexPacked } from './vertexPacked';
@@ -529,8 +527,6 @@ export function createSurfelFindMissingPass(): SurfelFindMissingPass {
                 touchedAtomic.element(victimIdx),
                 int(SURFEL_KILL_SIGNAL),
               );
-              const base = tileIndex.mul(int(2));
-              // tileAlloc.element(base).assign(int(-1)); // debug visualization despawn marker
             });
           });
         });

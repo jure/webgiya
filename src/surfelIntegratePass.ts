@@ -101,21 +101,21 @@ const envEquirectUV = wgslFn(/* wgsl */ `
   }
 `);
 
-const sampleEnvEquirect = wgslFn(
-  /* wgsl */ `
-  fn sampleEnvEquirect(
-    dirW: vec3f,
-    envTex: texture_2d<f32>,
-    envSampler: sampler,
-    lod: f32
-  ) -> vec3f {
-    let uv = envEquirectUV(dirW);
-    // In compute you don't have derivatives, so use SampleLevel.
-    return textureSampleLevel(envTex, envSampler, uv, lod).rgb;
-  }
-`,
-  [consts],
-);
+// const sampleEnvEquirect = wgslFn(
+//   /* wgsl */ `
+//   fn sampleEnvEquirect(
+//     dirW: vec3f,
+//     envTex: texture_2d<f32>,
+//     envSampler: sampler,
+//     lod: f32
+//   ) -> vec3f {
+//     let uv = envEquirectUV(dirW);
+//     // In compute you don't have derivatives, so use SampleLevel.
+//     return textureSampleLevel(envTex, envSampler, uv, lod).rgb;
+//   }
+// `,
+//   [consts],
+// );
 
 const sampleEnvEquirectClamped = wgslFn(
   /* wgsl */ `
