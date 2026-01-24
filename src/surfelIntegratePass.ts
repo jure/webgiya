@@ -1,19 +1,28 @@
 // surfelIntegratePass.ts
 import * as THREE from 'three/webgpu';
-import {
-  storage,
-  uniform,
-  wgslFn,
-  wgsl,
-  sampler,
-  texture,
-} from 'three/tsl';
+import { storage, uniform, wgslFn, wgsl, sampler, texture } from 'three/tsl';
 import type { SurfelPool } from './surfelPool';
 import type { SceneBVHBundle } from './sceneBvh';
 import { SurfelMoments, SurfelStruct } from './surfelPool';
-import { bvhIntersectFirstHit, getVertexAttribute, rayStruct, constants } from './external/three-mesh-bvh/src/webgpu';
-import { snap_to_surfel_grid_origin, type SurfelHashGrid } from './surfelHashGrid';
-import { SLG_TOTAL_FLOATS, SLG_DIM, SLG_LOBE_COUNT, MAX_SURFELS_PER_CELL_FOR_KEEP_ALIVE, SURFEL_IMPORTANCE_INDIRECT_MAX, SURFEL_DEPTH_TEXELS, OFFSETS_AND_LIST_START } from './constants';
+import {
+  bvhIntersectFirstHit,
+  getVertexAttribute,
+  rayStruct,
+  constants,
+} from './external/three-mesh-bvh/src/webgpu';
+import {
+  snap_to_surfel_grid_origin,
+  type SurfelHashGrid,
+} from './surfelHashGrid';
+import {
+  SLG_TOTAL_FLOATS,
+  SLG_DIM,
+  SLG_LOBE_COUNT,
+  MAX_SURFELS_PER_CELL_FOR_KEEP_ALIVE,
+  SURFEL_IMPORTANCE_INDIRECT_MAX,
+  SURFEL_DEPTH_TEXELS,
+  OFFSETS_AND_LIST_START,
+} from './constants';
 
 import {
   CASCADES,
@@ -23,9 +32,13 @@ import {
   SURFEL_NORMAL_DIRECTION_SQUISH,
   SURFEL_RADIUS_OVERSCALE,
   SURFEL_TTL,
-  TOTAL_CELLS
+  TOTAL_CELLS,
 } from './constants';
-import { update_surfel_depth2, surfelRadialDepthOcclusionRW, U_OCCLUSION_PARAMS } from './surfelRadialDepth';
+import {
+  update_surfel_depth2,
+  surfelRadialDepthOcclusionRW,
+  U_OCCLUSION_PARAMS,
+} from './surfelRadialDepth';
 
 const MAX_SURFELS_PER_CELL_LOOKUP = 32;
 
@@ -37,12 +50,12 @@ export type SurfelIntegratePass = {
     grid: SurfelHashGrid,
     camera: THREE.PerspectiveCamera,
     light: THREE.DirectionalLight,
-    dispatchArgs: THREE.IndirectStorageBufferAttribute
+    dispatchArgs: THREE.IndirectStorageBufferAttribute,
   ) => void;
 };
 
 // --- Grid helper functions (world → grid → hash) ---
-export const consts = wgsl(/* wgsl */`
+export const consts = wgsl(/* wgsl */ `
   const SURFEL_CS = ${SURFEL_CS};
   const SURFEL_CASCADES = ${CASCADES};
   const SURFEL_GRID_CELL_DIAMETER = ${SURFEL_GRID_CELL_DIAMETER};
@@ -77,7 +90,7 @@ export const consts = wgsl(/* wgsl */`
 
 `);
 
-const envEquirectUV = wgslFn(/* wgsl */`
+const envEquirectUV = wgslFn(/* wgsl */ `
   fn envEquirectUV(dirW: vec3f) -> vec2f {
     let d = normalize(dirW);
     // u: [-pi..pi] -> [0..1]
@@ -86,9 +99,10 @@ const envEquirectUV = wgslFn(/* wgsl */`
     let v = acos(clamp(-d.y, -1.0, 1.0)) / PI;
     return vec2f(u, v);
   }
-`)
+`);
 
-const sampleEnvEquirect = wgslFn(/* wgsl */`
+const sampleEnvEquirect = wgslFn(
+  /* wgsl */ `
   fn sampleEnvEquirect(
     dirW: vec3f,
     envTex: texture_2d<f32>,
@@ -99,9 +113,12 @@ const sampleEnvEquirect = wgslFn(/* wgsl */`
     // In compute you don't have derivatives, so use SampleLevel.
     return textureSampleLevel(envTex, envSampler, uv, lod).rgb;
   }
-`, [consts]);
+`,
+  [consts],
+);
 
-const sampleEnvEquirectClamped = wgslFn(/* wgsl */`
+const sampleEnvEquirectClamped = wgslFn(
+  /* wgsl */ `
   fn sampleEnvEquirect(
     dirW: vec3f,
     envTex: texture_2d<f32>,
@@ -120,19 +137,19 @@ const sampleEnvEquirectClamped = wgslFn(/* wgsl */`
     let compressed = knee + (maxVal - knee) * (1.0 - exp(-(lum - knee) / (maxVal - knee)));
     return hdr * (compressed / lum);
     }
-`, [consts]);
+`,
+  [consts],
+);
 
-
-export const radiusBasedEpsilon = wgslFn(/* wgsl */`
+export const radiusBasedEpsilon = wgslFn(/* wgsl */ `
   fn radius_based_epsilon(sRad: f32) -> f32 {
     // return 0.0001;
     return clamp(sRad * 0.01, 0.0005, 0.01);
   } 
-`)
-
+`);
 
 // Color helpers
-const colorHelpers = wgsl(/* wgsl */`
+const colorHelpers = wgsl(/* wgsl */ `
   fn calculate_luma(c: vec3f) -> f32 {
     return dot(c, vec3f(0.2126, 0.7152, 0.0722));
   }
@@ -154,7 +171,7 @@ const colorHelpers = wgsl(/* wgsl */`
   }
 `);
 
-const sampleDiffuseArray = wgslFn(/* wgsl */`
+const sampleDiffuseArray = wgslFn(/* wgsl */ `
   fn sampleDiffuseArray(
     tex: texture_2d_array<f32>,
     texSampler: sampler,
@@ -180,7 +197,7 @@ const sampleDiffuseArray = wgslFn(/* wgsl */`
   }
 `);
 
-const pcg = wgslFn(/* wgsl */`
+const pcg = wgslFn(/* wgsl */ `
   fn pcg(v: u32) -> u32 {
       var state = v * 747796405u + 2891336453u;
       var word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
@@ -188,7 +205,8 @@ const pcg = wgslFn(/* wgsl */`
   }
 `);
 
-const blueNoise4 = wgslFn(/* wgsl */`
+const blueNoise4 = wgslFn(
+  /* wgsl */ `
   fn blueNoise4(
     surfelIndex: u32,
     sampleIndex: u32,
@@ -205,10 +223,10 @@ const blueNoise4 = wgslFn(/* wgsl */`
     return textureLoad(tex, vec2u(x,y), 0);
   }
 `,
-  [consts]
+  [consts],
 );
 
-const blueNoiseSeed = wgslFn(/* wgsl */`
+const blueNoiseSeed = wgslFn(/* wgsl */ `
   fn blueNoiseSeed(
     surfelIndex: u32,
     sampleIndex: u32,
@@ -252,9 +270,9 @@ const getTangentBasis = wgslFn(/* wgsl */ `
   }
 `);
 
-
 // NEW: local-space cosine hemisphere sampling (z-up), no basis creation here. // NEW
-const sampleCosineHemisphereLocal = wgslFn(/* wgsl */`
+const sampleCosineHemisphereLocal = wgslFn(
+  /* wgsl */ `
   fn sampleCosineHemisphereLocal(u: vec2f) -> vec3f {
     // TODO: Testing
     // let z = u.x;
@@ -271,7 +289,7 @@ const sampleCosineHemisphereLocal = wgslFn(/* wgsl */`
     return vec3f(x, y, z);
   }
 `,
-  [consts]
+  [consts],
 ); // NEW
 
 // ------------------------------------------------------------------
@@ -290,7 +308,7 @@ export const hemiOctSquareEncode = wgslFn(
     return q * 0.5 + 0.5;                // [0,1]^2
   }
 `,
-  [consts]
+  [consts],
 );
 
 export const hemiOctSquareDecode = wgslFn(
@@ -303,16 +321,15 @@ export const hemiOctSquareDecode = wgslFn(
     return normalize(vec3f(p.x, p.y, z));       // guaranteed hemi
   }
 `,
-  [consts]
+  [consts],
 );
 
-const slgSafeU01 = wgslFn(/* wgsl */`
+const slgSafeU01 = wgslFn(/* wgsl */ `
   fn slgSafeU01(x: f32) -> f32 {
     // Avoid exactly 0 or 1 (blue-noise textures often contain exact endpoints)
     return clamp(x, 1e-6, 1.0 - 1e-6);
   }
 `);
-
 
 const hemiOctJacobian = wgslFn(/* wgsl */ `
   fn hemiOctJacobian(uv: vec2f) -> f32 {
@@ -336,7 +353,8 @@ const hemiOctJacobian = wgslFn(/* wgsl */ `
 `);
 
 // CHANGED: pdfSLG now works purely from uv in hemi-oct-square, no basis recompute. // CHANGED
-const pdfSLG = wgslFn(/* wgsl */ `
+const pdfSLG = wgslFn(
+  /* wgsl */ `
   fn pdfSLG(
     surfelIndex: u32,
     uv: vec2f,
@@ -359,7 +377,7 @@ const pdfSLG = wgslFn(/* wgsl */ `
     return (w / slgMass) * f32(SLG_LOBE_COUNT) / J;
   }
 `,
-  [consts, hemiOctJacobian]
+  [consts, hemiOctJacobian],
 ); // CHANGED
 
 // [SLG][CHANGED] Lobe axis in the SURFEL-LOCAL frame (no wasted cells)
@@ -372,11 +390,11 @@ const slgGetLobeAxisLocal = wgslFn(
     return hemiOctSquareDecode(uv);
   }
 `,
-  [consts, hemiOctSquareDecode]
+  [consts, hemiOctSquareDecode],
 );
 
 // SLG Zero lobes for a fresh surfel
-const slgClearForNewSurfel = wgslFn(/* wgsl */`
+const slgClearForNewSurfel = wgslFn(/* wgsl */ `
 fn slgClearForNewSurfel(
   surfelIndex: u32
 ) -> void {
@@ -391,7 +409,7 @@ fn slgClearForNewSurfel(
 // Based on Ray Tracing Gems, Chapter 25 (Barré‑Brisebois et al.), listing around
 // pp. 26–27 (“MultiscaleMeanEstimator”).
 // -----------------------------------------------------------------------------
-const msmeHelpers = wgsl(/* wgsl */`
+const msmeHelpers = wgsl(/* wgsl */ `
 struct MSMEData {
   mean: vec3f,
   shortMean: vec3f,
@@ -444,7 +462,6 @@ fn runMSME(y: vec3f, dataIn: MSMEData, shortWindowBlend: f32) -> MSMEData {
   return data;
 }`);
 
-
 // ------------------------------------------------------------------
 // [SLG][CHANGED] Sampling: choose lobe by weights, then sample a UNIFORM UV within that cell.
 // ------------------------------------------------------------------
@@ -484,7 +501,7 @@ const slgSampleLobeIndex = wgslFn(
     return i32(row * SLG_DIM + col);
   }
 `,
-  [consts]
+  [consts],
 );
 
 // [SLG][CHANGED] Update guiding weights by splatting luminance into the hemi-oct-square grid.
@@ -535,10 +552,8 @@ const slgUpdateFromSample = wgslFn(
     return massDiff;
   }
 `,
-  [consts]
+  [consts],
 );
-
-
 
 // CHANGED: sampleGuidedDirection returns BOTH local direction + uv (local-space-first). // CHANGED
 const sampleGuidedDirection = wgslFn(
@@ -592,8 +607,8 @@ const sampleGuidedDirection = wgslFn(
     hemiOctSquareDecode,
     hemiOctSquareEncode,
     sampleCosineHemisphereLocal,
-    slgSafeU01
-  ]
+    slgSafeU01,
+  ],
 ); // CHANGED
 
 const slgGetTotalMass = wgslFn(
@@ -610,10 +625,13 @@ const slgGetTotalMass = wgslFn(
         return total;
     }
     `,
-  [consts]
+  [consts],
 );
 
-export function createSurfelIntegratePass(blueNoiseTex: THREE.Texture, envTex: THREE.Texture): SurfelIntegratePass {
+export function createSurfelIntegratePass(
+  blueNoiseTex: THREE.Texture,
+  envTex: THREE.Texture,
+): SurfelIntegratePass {
   let computeNode: THREE.ComputeNode | null = null;
 
   // Uniforms
@@ -623,13 +641,13 @@ export function createSurfelIntegratePass(blueNoiseTex: THREE.Texture, envTex: T
   const U_CAM_POS = uniform(new THREE.Vector3());
   const U_READ_OFFSET = uniform(0);
   const U_WRITE_OFFSET = uniform(0);
-  const U_GRID_ORIGIN = uniform(new THREE.Vector3()); 
+  const U_GRID_ORIGIN = uniform(new THREE.Vector3());
 
   const blueNoiseTexN = texture(blueNoiseTex);
   const envTexture = envTex ? texture(envTex).toInspector('Env') : null;
   const envSampler = envTex ? sampler(envTex) : null;
 
-  const U_ENV_INTENSITY = uniform(1.0); 
+  const U_ENV_INTENSITY = uniform(1.0);
   const U_ENV_LOD = uniform(4.0);
 
   function run(
@@ -639,24 +657,35 @@ export function createSurfelIntegratePass(blueNoiseTex: THREE.Texture, envTex: T
     grid: SurfelHashGrid,
     camera: THREE.PerspectiveCamera,
     dirLight: THREE.DirectionalLight,
-    dispatchArgs: THREE.IndirectStorageBufferAttribute
+    dispatchArgs: THREE.IndirectStorageBufferAttribute,
   ) {
     const surfelAttr = pool.getSurfelAttr();
     const momentsAttr = pool.getMomentsAttr();
     const poolMax = pool.getPoolMaxAtomic();
     const guidingAttr = pool.getGuidingAttr(); // SLG lobe weights
-    const offsetsAndListAttr = grid.getOffsetsAndListAttr()
-    const touchedAtomic = pool.getTouched()
+    const offsetsAndListAttr = grid.getOffsetsAndListAttr();
+    const touchedAtomic = pool.getTouched();
     const surfelDepthAttr = pool.getSurfelDepthAttr();
 
-    if (!surfelAttr || !momentsAttr || !poolMax || !bvh.bvhNode || !offsetsAndListAttr || !guidingAttr || !surfelDepthAttr || !touchedAtomic)
+    if (
+      !surfelAttr ||
+      !momentsAttr ||
+      !poolMax ||
+      !bvh.bvhNode ||
+      !offsetsAndListAttr ||
+      !guidingAttr ||
+      !surfelDepthAttr ||
+      !touchedAtomic
+    )
       return;
 
     const touchedBuffer = touchedAtomic.setName('touched');
 
     // Update Uniforms
     U_FRAME.value = renderer.info.frame;
-    const lightDir = new THREE.Vector3().subVectors(dirLight.position, dirLight.target.position).normalize();
+    const lightDir = new THREE.Vector3()
+      .subVectors(dirLight.position, dirLight.target.position)
+      .normalize();
 
     U_LIGHT_DIR.value.copy(lightDir);
     U_LIGHT_COLOR.value.copy(dirLight.color).multiplyScalar(dirLight.intensity);
@@ -668,20 +697,37 @@ export function createSurfelIntegratePass(blueNoiseTex: THREE.Texture, envTex: T
     U_READ_OFFSET.value = readOffset;
     U_WRITE_OFFSET.value = writeOffset;
 
-
-
     if (!computeNode) {
       const capacity = surfelAttr.count;
 
-      const surfelBuffer = storage(surfelAttr, SurfelStruct, capacity).setAccess('readOnly').setName('surfels');
-      const momentsBuffer = storage(momentsAttr, SurfelMoments, capacity * 2).setAccess('readWrite').setName('moments');
+      const surfelBuffer = storage(surfelAttr, SurfelStruct, capacity)
+        .setAccess('readOnly')
+        .setName('surfels');
+      const momentsBuffer = storage(momentsAttr, SurfelMoments, capacity * 2)
+        .setAccess('readWrite')
+        .setName('moments');
 
-      const offsetsAndList = storage(offsetsAndListAttr, 'int', offsetsAndListAttr.count).setAccess('readOnly').setName('offsetsAndList');
+      const offsetsAndList = storage(
+        offsetsAndListAttr,
+        'int',
+        offsetsAndListAttr.count,
+      )
+        .setAccess('readOnly')
+        .setName('offsetsAndList');
 
-      const guidingBuffer = storage(guidingAttr, 'float', guidingAttr.count).setAccess('readWrite').setName('guidingBuffer');
-      const surfelDepthBuffer = storage(surfelDepthAttr, 'vec4', surfelDepthAttr.count).setAccess('readWrite').setName('surfelDepth');
+      const guidingBuffer = storage(guidingAttr, 'float', guidingAttr.count)
+        .setAccess('readWrite')
+        .setName('guidingBuffer');
+      const surfelDepthBuffer = storage(
+        surfelDepthAttr,
+        'vec4',
+        surfelDepthAttr.count,
+      )
+        .setAccess('readWrite')
+        .setName('surfelDepth');
 
-      const gridHelpers = wgsl(/* wgsl */`
+      const gridHelpers = wgsl(
+        /* wgsl */ `
         fn surfel_pos_to_grid_coord(pRel: vec3f) -> vec3i {
           return vec3i(floor(pRel / SURFEL_GRID_CELL_DIAMETER));
         }
@@ -732,10 +778,11 @@ export function createSurfelIntegratePass(blueNoiseTex: THREE.Texture, envTex: T
           return SURFEL_BASE_RADIUS * max(1.0, dist / cascadeRadius);
         }
       `,
-        [consts]
+        [consts],
       );
 
-      const lookupSurfelGI = wgslFn(/* wgsl */`
+      const lookupSurfelGI = wgslFn(
+        /* wgsl */ `
       fn lookupSurfelGI(
         pt_ws: vec3f,
         normal_ws: vec3f,
@@ -845,11 +892,12 @@ export function createSurfelIntegratePass(blueNoiseTex: THREE.Texture, envTex: T
         return totalColor / totalWeight;
       }
       `,
-        [consts, gridHelpers, surfelRadialDepthOcclusionRW]
+        [consts, gridHelpers, surfelRadialDepthOcclusionRW],
       );
 
       // --- WGSL Integrator ---
-      const integrator = wgslFn(/* wgsl */`
+      const integrator = wgslFn(
+        /* wgsl */ `
       fn compute(
           diffuseTex: texture_2d_array<f32>,
           diffuseTexSampler: sampler,
@@ -1176,7 +1224,7 @@ export function createSurfelIntegratePass(blueNoiseTex: THREE.Texture, envTex: T
           slgSampleLobeIndex,
 
           sampleGuidedDirection, // CHANGED return type/signature
-          pdfSLG,                // CHANGED signature
+          pdfSLG, // CHANGED signature
 
           // cache lookup + color
           lookupSurfelGI,
@@ -1198,8 +1246,8 @@ export function createSurfelIntegratePass(blueNoiseTex: THREE.Texture, envTex: T
           offsetsAndList,
           touchedBuffer,
           guidingBuffer,
-          surfelDepthBuffer
-        ]
+          surfelDepthBuffer,
+        ],
       );
 
       const computeCall = integrator({
@@ -1219,10 +1267,12 @@ export function createSurfelIntegratePass(blueNoiseTex: THREE.Texture, envTex: T
         blueNoiseTex: blueNoiseTexN,
         readOffset: U_READ_OFFSET,
         writeOffset: U_WRITE_OFFSET,
-        occParams: U_OCCLUSION_PARAMS
+        occParams: U_OCCLUSION_PARAMS,
       });
 
-      computeNode = computeCall.compute(capacity).setName('Surfel Integrate Pass');
+      computeNode = computeCall
+        .compute(capacity)
+        .setName('Surfel Integrate Pass');
     }
 
     renderer.compute(computeNode, dispatchArgs);

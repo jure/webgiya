@@ -1,9 +1,15 @@
 // surfelRadialDepth.ts (MSM 4-moment version)
 import * as THREE from 'three/webgpu';
 import { uniform, wgslFn } from 'three/tsl';
-import { consts, hemiOctSquareDecode, hemiOctSquareEncode } from './surfelIntegratePass';
+import {
+  consts,
+  hemiOctSquareDecode,
+  hemiOctSquareEncode,
+} from './surfelIntegratePass';
 
-export const U_OCCLUSION_PARAMS = uniform(new THREE.Vector4(1.2,0.2,0.25, 0.15));
+export const U_OCCLUSION_PARAMS = uniform(
+  new THREE.Vector4(1.2, 0.2, 0.25, 0.15),
+);
 
 export type OcclusionSettings = {
   shadowStrength: number;
@@ -16,7 +22,7 @@ const occlusionParams: OcclusionSettings = {
   shadowStrength: 1.2,
   bleedReduction: 0.2,
   grazingBiasScale: 0.25,
-  varianceBleedScale: 0.15
+  varianceBleedScale: 0.15,
 };
 
 function syncOcclusionUniform() {
@@ -24,26 +30,42 @@ function syncOcclusionUniform() {
     occlusionParams.shadowStrength,
     occlusionParams.bleedReduction,
     occlusionParams.grazingBiasScale,
-    occlusionParams.varianceBleedScale
+    occlusionParams.varianceBleedScale,
   );
 }
 
 export function applyOcclusionSettings(settings: Partial<OcclusionSettings>) {
-  if (settings.shadowStrength !== undefined) occlusionParams.shadowStrength = settings.shadowStrength;
-  if (settings.bleedReduction !== undefined) occlusionParams.bleedReduction = settings.bleedReduction;
-  if (settings.grazingBiasScale !== undefined) occlusionParams.grazingBiasScale = settings.grazingBiasScale;
-  if (settings.varianceBleedScale !== undefined) occlusionParams.varianceBleedScale = settings.varianceBleedScale;
+  if (settings.shadowStrength !== undefined)
+    occlusionParams.shadowStrength = settings.shadowStrength;
+  if (settings.bleedReduction !== undefined)
+    occlusionParams.bleedReduction = settings.bleedReduction;
+  if (settings.grazingBiasScale !== undefined)
+    occlusionParams.grazingBiasScale = settings.grazingBiasScale;
+  if (settings.varianceBleedScale !== undefined)
+    occlusionParams.varianceBleedScale = settings.varianceBleedScale;
   syncOcclusionUniform();
 }
 
 export const configureRadialDepthGUI = (gui) => {
-  const occlusionFolder  = gui.addFolder('Occlusion')
+  const occlusionFolder = gui.addFolder('Occlusion');
   const update = () => syncOcclusionUniform();
 
-  const shadowController = occlusionFolder.add(occlusionParams, 'shadowStrength', 0, 10, 0.1).name('Shadow strength').onChange(update);
-  const bleedController = occlusionFolder.add(occlusionParams, 'bleedReduction', 0, 1, 0.01).name('Bleed reduction').onChange(update);
-  const grazingController = occlusionFolder.add(occlusionParams, 'grazingBiasScale', 0, 1, 0.01).name('Grazing bias scale').onChange(update);
-  const varianceController = occlusionFolder.add(occlusionParams, 'varianceBleedScale', 0, 1, 0.01).name('Variance bleed scale').onChange(update);
+  const shadowController = occlusionFolder
+    .add(occlusionParams, 'shadowStrength', 0, 10, 0.1)
+    .name('Shadow strength')
+    .onChange(update);
+  const bleedController = occlusionFolder
+    .add(occlusionParams, 'bleedReduction', 0, 1, 0.01)
+    .name('Bleed reduction')
+    .onChange(update);
+  const grazingController = occlusionFolder
+    .add(occlusionParams, 'grazingBiasScale', 0, 1, 0.01)
+    .name('Grazing bias scale')
+    .onChange(update);
+  const varianceController = occlusionFolder
+    .add(occlusionParams, 'varianceBleedScale', 0, 1, 0.01)
+    .name('Variance bleed scale')
+    .onChange(update);
 
   shadowController.listen?.();
   bleedController.listen?.();
@@ -51,23 +73,25 @@ export const configureRadialDepthGUI = (gui) => {
   varianceController.listen?.();
 
   syncOcclusionUniform();
-}
+};
 
-
-export const reduceLightBleeding = wgslFn(/* wgsl */`
+export const reduceLightBleeding = wgslFn(/* wgsl */ `
     fn reduce_light_bleeding(visibility: f32, amount: f32) -> f32 {
     let a = clamp(amount, 0.0, 0.99);
     // Map [a..1] -> [0..1], clamp below a to 0.
     return clamp((visibility - a) / (1.0 - a), 0.0, 1.0);
   }
-`)
+`);
 
-export const surfel_depth_base_index = wgslFn(/* wgsl */`
+export const surfel_depth_base_index = wgslFn(
+  /* wgsl */ `
   fn surfel_depth_base_index(surfelIndex: u32) -> u32 {
     let t = u32(SURFEL_DEPTH_TEXELS);
     return surfelIndex * (t * t);
   }
-`, [consts]);
+`,
+  [consts],
+);
 
 /**
  * MSM4 visibility from 4 moments (m1..m4).
@@ -80,7 +104,8 @@ export const surfel_depth_base_index = wgslFn(/* wgsl */`
  * - Includes a tiny "moment bias" alpha for numerical robustness
  * - Includes an internal scale normalization to improve float32 conditioning (scale-invariant)
  */
-export const compute_surfel_depth_weight = wgslFn(/* wgsl */`
+export const compute_surfel_depth_weight = wgslFn(
+  /* wgsl */ `
   fn compute_surfel_depth_weight(
     mIn: vec4f, 
     distIn: f32,
@@ -259,10 +284,12 @@ export const compute_surfel_depth_weight = wgslFn(/* wgsl */`
     visibility = reduce_light_bleeding(visibility, bleed);
 
     return clamp(visibility, 0.0, 1.0);
-  }`, [reduceLightBleeding])
-  
+  }`,
+  [reduceLightBleeding],
+);
 
-export const linear_sample_radial_depth = wgslFn(/* wgsl */`
+export const linear_sample_radial_depth = wgslFn(
+  /* wgsl */ `
   fn linear_sample_radial_depth(
     surfelIndex: u32,
     uvIn: vec2f
@@ -309,9 +336,12 @@ export const linear_sample_radial_depth = wgslFn(/* wgsl */`
 
     return (p00*w00*v00 + p10*w10*v10 + p01*w01*v01 + p11*w11*v11) / sw;
   }
-`, [consts, surfel_depth_base_index]);
+`,
+  [consts, surfel_depth_base_index],
+);
 
-export const point_sample_radial_depth = wgslFn(/* wgsl */`
+export const point_sample_radial_depth = wgslFn(
+  /* wgsl */ `
   fn point_sample_radial_depth(
     surfelIndex: u32,
     uvIn: vec2f
@@ -329,9 +359,12 @@ export const point_sample_radial_depth = wgslFn(/* wgsl */`
     // globally bound: surfelDepth: <storage, value: array<vec4f>, read>,
     return surfelDepth.value[idx];
   }
-`, [consts, surfel_depth_base_index]);
+`,
+  [consts, surfel_depth_base_index],
+);
 
-export const surfelRadialDepthOcclusion = wgslFn(/* wgsl */`
+export const surfelRadialDepthOcclusion = wgslFn(
+  /* wgsl */ `
   fn surfel_radial_occlusion(
     surfelIndex: u32,
     dirWS: vec3f,
@@ -365,10 +398,16 @@ export const surfelRadialDepthOcclusion = wgslFn(/* wgsl */`
     return compute_surfel_depth_weight(m, dist, cosTheta, params.x, params.y, params.z, params.w);
   }
 `,
-[hemiOctSquareEncode, compute_surfel_depth_weight, point_sample_radial_depth, linear_sample_radial_depth]);
+  [
+    hemiOctSquareEncode,
+    compute_surfel_depth_weight,
+    point_sample_radial_depth,
+    linear_sample_radial_depth,
+  ],
+);
 
-
-export const update_surfel_depth2 = wgslFn(/* wgsl */`
+export const update_surfel_depth2 = wgslFn(
+  /* wgsl */ `
   fn update_surfel_depth2(
     surfelIndex: u32,
     uvIn: vec2f,
@@ -423,12 +462,15 @@ export const update_surfel_depth2 = wgslFn(/* wgsl */`
 
     surfelDepth.value[idx] = next;
   }
-`, [consts, hemiOctSquareDecode, surfel_depth_base_index]);
+`,
+  [consts, hemiOctSquareDecode, surfel_depth_base_index],
+);
 
 // -----------------------------------------------------------------------------
 // Point sample variant for a READ_WRITE (from integrate pass)
 // -----------------------------------------------------------------------------
-export const point_sample_radial_depth_rw = wgslFn(/* wgsl */`
+export const point_sample_radial_depth_rw = wgslFn(
+  /* wgsl */ `
   fn point_sample_radial_depth_rw(
     surfelIndex: u32,
     uvIn: vec2f
@@ -446,14 +488,16 @@ export const point_sample_radial_depth_rw = wgslFn(/* wgsl */`
     // globally bound: surfelDepth: <storage, value: array<vec4f>, read>,
     return surfelDepth.value[idx];
   }
-`, [consts, surfel_depth_base_index]);
-
+`,
+  [consts, surfel_depth_base_index],
+);
 
 // -----------------------------------------------------------------------------
 // MSM occlusion using READ_WRITE storage texture (integrator)
 // IMPORTANT: returns 0 for directions behind the surfel hemisphere.
 // -----------------------------------------------------------------------------
-export const surfelRadialDepthOcclusionRW = wgslFn(/* wgsl */`
+export const surfelRadialDepthOcclusionRW = wgslFn(
+  /* wgsl */ `
   fn surfel_radial_occlusion_rw(
     surfelIndex: u32,
     dirWS: vec3f,
@@ -483,5 +527,11 @@ export const surfelRadialDepthOcclusionRW = wgslFn(/* wgsl */`
 
     return compute_surfel_depth_weight(m, dist, cosTheta, params.x, params.y, params.z, params.w);
   }
-`, [hemiOctSquareEncode, point_sample_radial_depth_rw, compute_surfel_depth_weight, linear_sample_radial_depth]);
-
+`,
+  [
+    hemiOctSquareEncode,
+    point_sample_radial_depth_rw,
+    compute_surfel_depth_weight,
+    linear_sample_radial_depth,
+  ],
+);

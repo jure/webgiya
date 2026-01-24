@@ -18,7 +18,7 @@ export function createScene(renderer: THREE.WebGPURenderer): SceneBundle {
     60,
     window.innerWidth / window.innerHeight,
     0.1,
-    2000
+    2000,
   );
   camera.position.set(2, 5, 5);
 

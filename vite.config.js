@@ -1,6 +1,6 @@
 // vite.config.js
 import { defineConfig } from 'vite';
-import mkcert from 'vite-plugin-mkcert'
+import mkcert from 'vite-plugin-mkcert';
 
 export default defineConfig(({ command }) => ({
   base: command === 'serve' ? '/' : '/webgiya/',
@@ -15,5 +15,5 @@ export default defineConfig(({ command }) => ({
     outDir: 'dist',
     emptyOutDir: true,
   },
-  plugins: [mkcert()]
+  plugins: [mkcert()],
 }));

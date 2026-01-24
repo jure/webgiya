@@ -4,7 +4,7 @@ import * as THREE from 'three/webgpu';
 export function makeNodeStandard(
   hex: number,
   roughness = 0.8,
-  metalness = 0.0
+  metalness = 0.0,
 ): THREE.MeshStandardNodeMaterial {
   const mat = new THREE.MeshStandardNodeMaterial();
   mat.colorNode = tslColor(hex);
@@ -13,5 +13,3 @@ export function makeNodeStandard(
   mat.metalnessNode = float(metalness);
   return mat;
 }
-
-

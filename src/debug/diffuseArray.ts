@@ -24,7 +24,9 @@ function clamp01(x: number): number {
 
 function getMaterialColorLinear(mat: THREE.Material): THREE.Color {
   const m = mat as MatLike;
-  return (m.color && (m.color as any).isColor) ? m.color : new THREE.Color(1, 1, 1);
+  return m.color && (m.color as any).isColor
+    ? m.color
+    : new THREE.Color(1, 1, 1);
 }
 
 function getMaterialMap(mat: THREE.Material): THREE.Texture | null {
@@ -32,7 +34,12 @@ function getMaterialMap(mat: THREE.Material): THREE.Texture | null {
   return m.map ?? null;
 }
 
-function drawTextureToRGBA8(tex: THREE.Texture, size: number, canvas: any, ctx: any): Uint8Array {
+function drawTextureToRGBA8(
+  tex: THREE.Texture,
+  size: number,
+  canvas: any,
+  ctx: any,
+): Uint8Array {
   const img: any = (tex as any).image ?? (tex as any).source?.data;
   if (!img) {
     const white = new Uint8Array(size * size * 4);
@@ -60,12 +67,15 @@ function drawTextureToRGBA8(tex: THREE.Texture, size: number, canvas: any, ctx: 
   return new Uint8Array(data);
 }
 
-export function buildDiffuseArrayTexture(scene: THREE.Scene, layerSize = 1024): DiffuseArrayResult {
+export function buildDiffuseArrayTexture(
+  scene: THREE.Scene,
+  layerSize = 1024,
+): DiffuseArrayResult {
   // 1) Collect unique materials
   const materialIdByUUID = new Map<string, number>();
   const materials: THREE.Material[] = [];
 
-  scene.traverse(obj => {
+  scene.traverse((obj) => {
     if (!(obj instanceof THREE.Mesh) || !obj.visible) return;
 
     const mesh = obj as THREE.Mesh;
@@ -88,7 +98,10 @@ export function buildDiffuseArrayTexture(scene: THREE.Scene, layerSize = 1024): 
   const canvas: any =
     typeof OffscreenCanvas !== 'undefined'
       ? new OffscreenCanvas(layerSize, layerSize)
-      : Object.assign(document.createElement('canvas'), { width: layerSize, height: layerSize });
+      : Object.assign(document.createElement('canvas'), {
+          width: layerSize,
+          height: layerSize,
+        });
 
   const ctx: any = canvas.getContext('2d', { willReadFrequently: true });
 
@@ -144,7 +157,12 @@ export function buildDiffuseArrayTexture(scene: THREE.Scene, layerSize = 1024): 
   }
 
   // 2) Create the array texture
-  const tex = new THREE.DataArrayTexture(all, layerSize, layerSize, materialCount);
+  const tex = new THREE.DataArrayTexture(
+    all,
+    layerSize,
+    layerSize,
+    materialCount,
+  );
   tex.format = THREE.RGBAFormat;
   tex.type = THREE.UnsignedByteType;
 

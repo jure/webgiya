@@ -8,7 +8,11 @@ declare module 'three/addons/inspector/Inspector.js' {
   };
 
   export type InspectorParametersGroup = {
-    add: (object: any, property: string, ...params: any[]) => InspectorParameterControl;
+    add: (
+      object: any,
+      property: string,
+      ...params: any[]
+    ) => InspectorParameterControl;
     addFolder: (name: string) => InspectorParametersGroup;
     close: () => InspectorParametersGroup;
   };

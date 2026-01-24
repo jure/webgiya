@@ -11,9 +11,9 @@ const isMobileDevice =
 export const CASCADES = isMobileDevice ? 6 : 8;
 export const SURFEL_BASE_RADIUS = 0.24;
 export const MAX_SURFELS = isMobileDevice ? 65536 : 262144;
-export const MAX_SURFELS_PER_CELL = 64
+export const MAX_SURFELS_PER_CELL = 64;
 export const MAX_SURFELS_PER_CELL_FOR_KEEP_ALIVE = 32;
-export const TOTAL_CELLS = SURFEL_CS * SURFEL_CS * SURFEL_CS * CASCADES
+export const TOTAL_CELLS = SURFEL_CS * SURFEL_CS * SURFEL_CS * CASCADES;
 export const SURFEL_RADIUS_OVERSCALE = 1.25;
 
 export const SLG_DIM = 8;
@@ -34,7 +34,8 @@ export const SURFEL_DEPTH_TEXELS = 4;
 
 // Large default so new surfels do NOT occlude everything until learned.
 export const SURFEL_DEPTH_DEFAULT = 10.0;
-export const SURFEL_DEPTH_DEFAULT2 = SURFEL_DEPTH_DEFAULT * SURFEL_DEPTH_DEFAULT;
+export const SURFEL_DEPTH_DEFAULT2 =
+  SURFEL_DEPTH_DEFAULT * SURFEL_DEPTH_DEFAULT;
 
 export const FADE_FRAMES = 4;
 export const TARGET_SAMPLE_COUNT = 32;

@@ -9,7 +9,9 @@ export type GBufferBundle = {
 };
 
 export function createGBuffer(renderer: THREE.WebGPURenderer): GBufferBundle {
-  const dpr = renderer.getPixelRatio ? renderer.getPixelRatio() : window.devicePixelRatio;
+  const dpr = renderer.getPixelRatio
+    ? renderer.getPixelRatio()
+    : window.devicePixelRatio;
   const rawW = Math.max(1, Math.floor(window.innerWidth * dpr));
   const rawH = Math.max(1, Math.floor(window.innerHeight * dpr));
 
@@ -34,12 +36,13 @@ export function createGBuffer(renderer: THREE.WebGPURenderer): GBufferBundle {
   const sceneMRT = mrt({
     // TODO: Use shading normals where appropriate?
     normal: normalWorldGeometry.mul(0.5).add(0.5),
-    diffuseColor: vec4(diffuseColor.rgb, 1.0) 
+    diffuseColor: vec4(diffuseColor.rgb, 1.0),
   });
 
-
   function resize(renderer: THREE.WebGPURenderer) {
-    const dpr = renderer.getPixelRatio ? renderer.getPixelRatio() : window.devicePixelRatio;
+    const dpr = renderer.getPixelRatio
+      ? renderer.getPixelRatio()
+      : window.devicePixelRatio;
     const rawW = Math.max(1, Math.floor(window.innerWidth * dpr));
     const rawH = Math.max(1, Math.floor(window.innerHeight * dpr));
     target.setSize(rawW, rawH);

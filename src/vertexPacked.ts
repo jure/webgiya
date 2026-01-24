@@ -1,14 +1,29 @@
-import { Fn, float, uint, vec3, struct, bitcast, clamp, normalize } from 'three/tsl';
-import * as THREE from 'three/webgpu'
+import {
+  Fn,
+  float,
+  uint,
+  vec3,
+  struct,
+  bitcast,
+  clamp,
+  normalize,
+} from 'three/tsl';
+import * as THREE from 'three/webgpu';
 
-export const VertexPacked = struct({
-  data0: 'vec4'
-}, 'VertexPacked');
+export const VertexPacked = struct(
+  {
+    data0: 'vec4',
+  },
+  'VertexPacked',
+);
 
-export const Vertex = struct({
-  position: 'vec3',
-  normal: 'vec3'
-}, 'Vertex');
+export const Vertex = struct(
+  {
+    position: 'vec3',
+    normal: 'vec3',
+  },
+  'Vertex',
+);
 
 export const pack_unorm = Fn(([val, bitCount]: [THREE.Node, THREE.Node]) => {
   const maxVal = uint(1).shiftLeft(bitCount).sub(1);
@@ -38,7 +53,10 @@ export const unpack_unit_direction_11_10_11 = Fn(([pck]: [THREE.Node]) => {
   const div10 = float(1023.0);
 
   const x = float(pck.bitAnd(mask11)).mul(2.0).div(div11).sub(1.0);
-  const y = float(pck.shiftRight(11).bitAnd(mask10)).mul(2.0).div(div10).sub(1.0);
+  const y = float(pck.shiftRight(11).bitAnd(mask10))
+    .mul(2.0)
+    .div(div10)
+    .sub(1.0);
   const z = float(pck.shiftRight(21)).mul(2.0).div(div11).sub(1.0);
 
   return vec3(x, y, z);
@@ -53,7 +71,9 @@ export const unpack_vertex = Fn(([p]: [THREE.Node]) => {
   const res = Vertex();
   res.get('position').assign(p.get('data0').xyz);
   // Use asuint equivalent (bitcast) to unpack normal from float w
-  res.get('normal').assign(unpack_unit_direction_11_10_11(bitcast(p.get('data0').w, 'uint')));
+  res
+    .get('normal')
+    .assign(unpack_unit_direction_11_10_11(bitcast(p.get('data0').w, 'uint')));
   return res;
 });
 

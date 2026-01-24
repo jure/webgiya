@@ -1,6 +1,9 @@
 import { GUI } from 'lil-gui';
 import type * as THREE from 'three/webgpu';
-import type { Inspector, InspectorParametersGroup } from 'three/addons/inspector/Inspector.js';
+import type {
+  Inspector,
+  InspectorParametersGroup,
+} from 'three/addons/inspector/Inspector.js';
 
 type GuiFolder = {
   addFolder: (label: string) => GuiFolder;
@@ -16,12 +19,16 @@ type GuiController = {
   updateDisplay?: () => GuiController | void;
 };
 
-function isInspectorAvailable(renderer: THREE.WebGPURenderer): renderer is THREE.WebGPURenderer & {
-  inspector: Inspector & { createParameters: (label: string) => InspectorParametersGroup }
+function isInspectorAvailable(
+  renderer: THREE.WebGPURenderer,
+): renderer is THREE.WebGPURenderer & {
+  inspector: Inspector & {
+    createParameters: (label: string) => InspectorParametersGroup;
+  };
 } {
   return Boolean(
     renderer.inspector &&
-    typeof (renderer.inspector as Inspector).createParameters === 'function'
+    typeof (renderer.inspector as Inspector).createParameters === 'function',
   );
 }
 
@@ -90,7 +97,7 @@ export type SceneSwitcher = {
 export function createSceneSwitcher(
   scenes: SceneOption[],
   onChange: (sceneId: string) => void,
-  initialSceneId?: string
+  initialSceneId?: string,
 ): SceneSwitcher | null {
   if (scenes.length === 0) return null;
 
@@ -114,7 +121,8 @@ export function createSceneSwitcher(
   nextButton.textContent = 'Next';
   nextButton.addEventListener('click', () => {
     const currentIndex = scenes.findIndex((scene) => scene.id === select.value);
-    const nextIndex = currentIndex === -1 ? 0 : (currentIndex + 1) % scenes.length;
+    const nextIndex =
+      currentIndex === -1 ? 0 : (currentIndex + 1) % scenes.length;
     onChange(scenes[nextIndex].id);
   });
 
@@ -127,7 +135,7 @@ export function createSceneSwitcher(
     nextButton,
     setValue: (sceneId: string) => {
       select.value = sceneId;
-    }
+    },
   };
 }
 
@@ -135,19 +143,24 @@ export function configureSceneSelector(
   gui: GuiFolder,
   scenes: SceneOption[],
   onChange: (sceneId: string) => void,
-  initialSceneId?: string
+  initialSceneId?: string,
 ) {
   if (scenes.length === 0) return;
 
   const sceneParams = {
-    scene: initialSceneId ?? scenes[0].id
+    scene: initialSceneId ?? scenes[0].id,
   };
 
-  const options = Object.fromEntries(scenes.map((scene) => [scene.label, scene.id]));
+  const options = Object.fromEntries(
+    scenes.map((scene) => [scene.label, scene.id]),
+  );
   const folder = gui.addFolder('Scene');
-  const controller = folder.add(sceneParams, 'scene', options).name('Preset').onChange((value) => {
-    onChange(String(value));
-  });
+  const controller = folder
+    .add(sceneParams, 'scene', options)
+    .name('Preset')
+    .onChange((value) => {
+      onChange(String(value));
+    });
 
   controller.listen?.();
   return { folder, controller, params: sceneParams };

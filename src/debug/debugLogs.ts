@@ -1,10 +1,9 @@
 // --- Surfel debug configuration ----------------------------------
 
-import { MAX_SURFELS, TOTAL_CELLS } from "../constants";
+import { MAX_SURFELS, TOTAL_CELLS } from '../constants';
 
 const DEBUG_SURFELS = true;
 const DEBUG_SURFELS_INTERVAL = 15; // frames
-
 
 // --- Central debug helper ----------------------------------------
 export async function debugGridIntegrity(renderer, grid) {
@@ -27,7 +26,9 @@ export async function debugGridIntegrity(renderer, grid) {
   const listLen = list.length;
 
   console.log('--- GRID INTEGRITY CHECK ---');
-  console.log(`cells: ${cellCount}, TOTAL_CELLS constant: ${TOTAL_CELLS}, listLen: ${listLen}`);
+  console.log(
+    `cells: ${cellCount}, TOTAL_CELLS constant: ${TOTAL_CELLS}, listLen: ${listLen}`,
+  );
 
   let holes = 0;
   let overflows = 0;
@@ -42,7 +43,9 @@ export async function debugGridIntegrity(renderer, grid) {
     const count = nextStart - start;
 
     if (nextStart < start) {
-      console.log(`❌ Cell ${i}: negative count, start=${start}, next=${nextStart}`);
+      console.log(
+        `❌ Cell ${i}: negative count, start=${start}, next=${nextStart}`,
+      );
       overflows++;
       continue;
     }
@@ -88,11 +91,16 @@ export async function debugOffsetsStats(renderer, grid) {
 
   let maxCnt = 0;
   let maxCell = 0;
-  let over32 = 0, over64 = 0, over128 = 0;
+  let over32 = 0,
+    over64 = 0,
+    over128 = 0;
 
   for (let i = 0; i < cellCount; i++) {
     const cnt = offsets[i + 1] - offsets[i];
-    if (cnt > maxCnt) { maxCnt = cnt; maxCell = i; }
+    if (cnt > maxCnt) {
+      maxCnt = cnt;
+      maxCell = i;
+    }
     if (cnt > 32) over32++;
     if (cnt > 64) over64++;
     if (cnt > 128) over128++;
@@ -105,16 +113,17 @@ export async function debugOffsetsStats(renderer, grid) {
     overflow: totalIntersections > listLen,
     maxCnt,
     maxCell,
-    over32, over64, over128
+    over32,
+    over64,
+    over128,
   });
 }
-
 
 export async function debugSurfelSystem(
   renderer: WebGPURenderer,
   surfelPool: SurfelPool,
   grid: SurfelHashGrid,
-  findMissingPass: SurfelFindMissingPass
+  findMissingPass: SurfelFindMissingPass,
 ) {
   if (!DEBUG_SURFELS) return;
 
@@ -147,66 +156,64 @@ export async function debugSurfelSystem(
   const surfelsI32 = new Int32Array(surfelBuf);
   const capacity = surfels.length / 8;
 
-  let aliveCount = 0;           // life < SURFEL_LIFE_RECYCLE
-  let recycleFlagCount = 0;     // life == SURFEL_LIFE_RECYCLE
-  let recycledCount = 0;        // life == SURFEL_LIFE_RECYCLED
-   
-    // STATS TRACKING
-    let minAge = 999999999;
-    let maxAge = -999999999;
-    let weirdAges = 0;
-    const sampleAges = [];
-    const samplePositions = [];
-    const sampleNormals = [];
+  let aliveCount = 0; // life < SURFEL_LIFE_RECYCLE
+  let recycleFlagCount = 0; // life == SURFEL_LIFE_RECYCLE
+  let recycledCount = 0; // life == SURFEL_LIFE_RECYCLED
 
-    for (let i = 0; i < capacity; i++) {
-      // 8 ints per surfel. Index 7 is Age.
-      const ageVal = surfelsI32[i * 8 + 7]; 
-      
-      // Check for the "Recycled" flag
-      if (ageVal === SURFEL_LIFE_RECYCLE) {
-        recycleFlagCount++;
-      } else if (ageVal === SURFEL_LIFE_RECYCLED) {
-        recycledCount++;
-      } else {
-        // IT IS ALIVE
-        aliveCount++;
-        
-        if (ageVal < minAge) minAge = ageVal;
-        if (ageVal > maxAge) maxAge = ageVal;
+  // STATS TRACKING
+  let minAge = 999999999;
+  let maxAge = -999999999;
+  let weirdAges = 0;
+  const sampleAges = [];
+  const samplePositions = [];
+  const sampleNormals = [];
 
-        
-        const positionX = surfels[i*8].toFixed(2);
-        const positionY = surfels[i*8 + 1].toFixed(2);
-        const positionZ = surfels[i*8 + 2].toFixed(2);
+  for (let i = 0; i < capacity; i++) {
+    // 8 ints per surfel. Index 7 is Age.
+    const ageVal = surfelsI32[i * 8 + 7];
 
-        const normalX = surfels[i*8 + 4].toFixed(2);
-        const normalY = surfels[i*8 + 5].toFixed(2);
-        const normalZ = surfels[i*8 + 6].toFixed(2);
+    // Check for the "Recycled" flag
+    if (ageVal === SURFEL_LIFE_RECYCLE) {
+      recycleFlagCount++;
+    } else if (ageVal === SURFEL_LIFE_RECYCLED) {
+      recycledCount++;
+    } else {
+      // IT IS ALIVE
+      aliveCount++;
 
-        // Grab a few samples
-        if (sampleAges.length < 128) {
-          sampleAges.push(ageVal)
-          samplePositions.push([positionX, positionY, positionZ])
-          sampleNormals.push([normalX,  normalY, normalZ]) 
-        };
+      if (ageVal < minAge) minAge = ageVal;
+      if (ageVal > maxAge) maxAge = ageVal;
 
-        // Sanity Check: Age should be 0..100
-        // If it's effectively random garbage (huge ints), it proves memory corruption
-        if (ageVal < 0 || ageVal > 1000) {
-            weirdAges++;
-        }
+      const positionX = surfels[i * 8].toFixed(2);
+      const positionY = surfels[i * 8 + 1].toFixed(2);
+      const positionZ = surfels[i * 8 + 2].toFixed(2);
+
+      const normalX = surfels[i * 8 + 4].toFixed(2);
+      const normalY = surfels[i * 8 + 5].toFixed(2);
+      const normalZ = surfels[i * 8 + 6].toFixed(2);
+
+      // Grab a few samples
+      if (sampleAges.length < 128) {
+        sampleAges.push(ageVal);
+        samplePositions.push([positionX, positionY, positionZ]);
+        sampleNormals.push([normalX, normalY, normalZ]);
+      }
+
+      // Sanity Check: Age should be 0..100
+      // If it's effectively random garbage (huge ints), it proves memory corruption
+      if (ageVal < 0 || ageVal > 1000) {
+        weirdAges++;
       }
     }
+  }
 
-    // console.log('--- POOL HEALTH ---');
-    // console.log(`Alive: ${aliveCount}, Recycled: ${recycledCount}, Flagged: ${recycleFlagCount}`);
-    // console.log(`Age Range: [${minAge}, ${maxAge}]`);
-    // console.log(`Weird/Corrupt Ages (>1000 or <0): ${weirdAges}`);
-    // console.log(`Sample Ages:`, sampleAges);
-    // console.log(`Sample Pos:`, JSON.stringify(samplePositions));
-    // console.log(`Sample Nor:`, JSON.stringify(sampleNormals));
-
+  // console.log('--- POOL HEALTH ---');
+  // console.log(`Alive: ${aliveCount}, Recycled: ${recycledCount}, Flagged: ${recycleFlagCount}`);
+  // console.log(`Age Range: [${minAge}, ${maxAge}]`);
+  // console.log(`Weird/Corrupt Ages (>1000 or <0): ${weirdAges}`);
+  // console.log(`Sample Ages:`, sampleAges);
+  // console.log(`Sample Pos:`, JSON.stringify(samplePositions));
+  // console.log(`Sample Nor:`, JSON.stringify(sampleNormals));
 
   let minR = Number.POSITIVE_INFINITY;
   let maxR = 0;
@@ -219,7 +226,7 @@ export async function debugSurfelSystem(
   if (tileAllocAttr && tileBuf) {
     const tileAlloc = new Int32Array(tileBuf);
     // tileAlloc.length is the absolute truth of how many integers you have
-    totalInts = tileAlloc.length; 
+    totalInts = tileAlloc.length;
 
     // We step by 2 because your data is [spawnFlag, cellIndex, spawnFlag, cellIndex...]
     for (let i = 0; i < totalInts; i += 2) {
@@ -230,12 +237,11 @@ export async function debugSurfelSystem(
         spawnTilesUndefined++;
       } else if (flag == 1) {
         spawnTiles++;
-      } else  if (flag == -1) {
+      } else if (flag == -1) {
         despawnTiles++;
       }
     }
   }
-
 
   // --- Optional: validate grid vs alive counter (reuses your old check) ---
   let validationInfo: string | null = null;
@@ -254,7 +260,7 @@ export async function debugSurfelSystem(
     // console.log(gridCounts)
 
     validationInfo = `GPU Alive: ${totalAlive} | Grid Sum: ${totalGridCount} | Ratio: ${ratio.toFixed(
-      2
+      2,
     )}`;
 
     if (validationInfo) {
@@ -273,10 +279,7 @@ export async function debugSurfelSystem(
   }
 
   // --- Pretty logging ----------------------------------------------------
-  console.log(
-    `%c[Surfel] frame=${frame}`,
-    'color:#0ff;font-weight:bold'
-  );
+  console.log(`%c[Surfel] frame=${frame}`, 'color:#0ff;font-weight:bold');
 
   console.log('Pool / Life:', {
     capacity,
@@ -286,21 +289,19 @@ export async function debugSurfelSystem(
     aliveRatio: capacity > 0 ? (aliveCount / capacity).toFixed(3) : 'n/a',
   });
 
-
   if (totalInts > 0) {
     console.log('Spawn tiles:', {
       requested: spawnTiles,
       spawnTilesUndefined: spawnTilesUndefined,
       totalInts,
-      spawnRatio: (spawnTiles / (totalInts/2)).toFixed(3),
-      despawnTiles: despawnTiles
+      spawnRatio: (spawnTiles / (totalInts / 2)).toFixed(3),
+      despawnTiles: despawnTiles,
     });
   }
 
-
-
-  const poolAllocBuf = await renderer.getArrayBufferAsync(surfelPool.getPoolAllocAtomic().value);
+  const poolAllocBuf = await renderer.getArrayBufferAsync(
+    surfelPool.getPoolAllocAtomic().value,
+  );
   const allocCount = new Int32Array(poolAllocBuf)[0];
-  console.log("Pool Alloc Count:", allocCount, "/", MAX_SURFELS);
-
+  console.log('Pool Alloc Count:', allocCount, '/', MAX_SURFELS);
 }

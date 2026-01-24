@@ -11,7 +11,9 @@
       <div id="loading-overlay" class="overlay">
         <div class="overlay-card">
           <div class="overlay-title">Loading…</div>
-          <div id="loading-message" class="overlay-message">Preparing scene</div>
+          <div id="loading-message" class="overlay-message">
+            Preparing scene
+          </div>
         </div>
       </div>
       <div id="error-overlay" class="overlay hidden">
@@ -22,9 +24,18 @@
       </div>
     </div>
     <style>
-      html, body, #app { height: 100%; }
-      body { margin: 0; overflow: hidden; }
-      canvas { display: block; }
+      html,
+      body,
+      #app {
+        height: 100%;
+      }
+      body {
+        margin: 0;
+        overflow: hidden;
+      }
+      canvas {
+        display: block;
+      }
     </style>
     <script type="module" src="/src/main.ts"></script>
   </body>

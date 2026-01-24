@@ -6,7 +6,7 @@ const lightCfg = {
   elevationDeg: 50,
   intensity: 2.0,
   animate: false, // <--- New Toggle
-  speed: 0.5      // <--- Speed Control
+  speed: 0.5, // <--- Speed Control
 };
 
 export type LightSettings = typeof lightCfg;
@@ -14,7 +14,7 @@ export type LightSettings = typeof lightCfg;
 export function createLightControls(
   gui: GUI,
   initialLight: THREE.DirectionalLight,
-  onChanged?: () => void
+  onChanged?: () => void,
 ) {
   let dirLight = initialLight;
 
@@ -25,7 +25,7 @@ export function createLightControls(
 
   function updateLightFromAngles() {
     // Only apply manual angles if NOT animating
-    if (lightCfg.animate) return; 
+    if (lightCfg.animate) return;
 
     const az = THREE.MathUtils.degToRad(lightCfg.azimuthDeg);
     const el = THREE.MathUtils.degToRad(lightCfg.elevationDeg);
@@ -33,7 +33,7 @@ export function createLightControls(
     const x = r * Math.cos(el) * Math.cos(az);
     const y = r * Math.sin(el);
     const z = r * Math.cos(el) * Math.sin(az);
-    
+
     dirLight.position.set(x, y, z);
     dirLight.intensity = lightCfg.intensity;
     onChanged?.();
@@ -50,16 +50,28 @@ export function createLightControls(
     dirLight.position.x = Math.sin(time * lightCfg.speed) * r;
     dirLight.position.z = Math.cos(time * lightCfg.speed) * r;
     dirLight.position.y = lowY;
-    
+
     dirLight.intensity = lightCfg.intensity;
     dirLight.updateMatrixWorld();
   }
 
   const folder = gui.addFolder('Light');
-  folder.add(lightCfg, 'azimuthDeg', -180, 180, 0.1).name('Azimuth').onChange(updateLightFromAngles).listen?.(); // .listen() lets us update UI if needed
-  folder.add(lightCfg, 'elevationDeg', -5, 89, 0.1).name('Elevation').onChange(updateLightFromAngles).listen?.();
-  folder.add(lightCfg, 'intensity', 0, 10, 0.01).name('Intensity').onChange(updateLightFromAngles).listen?.();
-  
+  folder
+    .add(lightCfg, 'azimuthDeg', -180, 180, 0.1)
+    .name('Azimuth')
+    .onChange(updateLightFromAngles)
+    .listen?.(); // .listen() lets us update UI if needed
+  folder
+    .add(lightCfg, 'elevationDeg', -5, 89, 0.1)
+    .name('Elevation')
+    .onChange(updateLightFromAngles)
+    .listen?.();
+  folder
+    .add(lightCfg, 'intensity', 0, 10, 0.01)
+    .name('Intensity')
+    .onChange(updateLightFromAngles)
+    .listen?.();
+
   folder.add(lightCfg, 'animate').name('Auto Animate').listen?.();
   folder.add(lightCfg, 'speed', 0.1, 5.0).name('Anim Speed').listen?.();
 
@@ -75,16 +87,19 @@ export function setLightAngles(azimuthDeg: number, elevationDeg: number) {
 }
 
 export function setLightAnglesFromEnvMapSunUVLocation(u: number, v: number) {
-  const azimuth = (u - 0.5) * 360;      // -180° to +180°
-  const elevation = (0.5 - v) * 180;    // +90° to -90°
+  const azimuth = (u - 0.5) * 360; // -180° to +180°
+  const elevation = (0.5 - v) * 180; // +90° to -90°
   setLightAngles(azimuth, elevation);
 }
 
-export function findSunPositionWeighted(texture: THREE.DataTexture, threshold = 0.5) {
+export function findSunPositionWeighted(
+  texture: THREE.DataTexture,
+  threshold = 0.5,
+) {
   const { data, width, height } = texture.image;
-  
-  if(!data) {
-    throw new Error('No data')
+
+  if (!data) {
+    throw new Error('No data');
   }
   // First pass: find max luminance
   let maxLum = 0;
@@ -92,16 +107,19 @@ export function findSunPositionWeighted(texture: THREE.DataTexture, threshold = 
     const lum = 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
     if (lum > maxLum) maxLum = lum;
   }
-  
+
   // Second pass: weighted centroid of bright pixels
   const cutoff = maxLum * threshold;
-  let sumX = 0, sumY = 0, sumWeight = 0;
-  
+  let sumX = 0,
+    sumY = 0,
+    sumWeight = 0;
+
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const i = (y * width + x) * 4;
-      const lum = 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
-      
+      const lum =
+        0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+
       if (lum > cutoff) {
         sumX += x * lum;
         sumY += y * lum;
@@ -109,13 +127,13 @@ export function findSunPositionWeighted(texture: THREE.DataTexture, threshold = 
       }
     }
   }
-  
+
   const sunU = (sumX / sumWeight + 0.5) / width;
   let sunV = (sumY / sumWeight + 0.5) / height;
-  
+
   if (!texture.flipY) {
     sunV = 1 - sunV;
   }
 
-  return [sunU, sunV]
+  return [sunU, sunV];
 }
