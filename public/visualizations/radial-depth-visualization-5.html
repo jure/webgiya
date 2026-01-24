@@ -1,0 +1,1621 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>2D Radial Depth Occlusion (MSM4 vs VSM) - Fixed</title>
+  <style>
+    :root{
+      --bg:#0f0f12;
+      --panel:rgba(20,20,26,.82);
+      --panel2:#14141a;
+      --border:rgba(255,255,255,.10);
+      --text:#e8e8ef;
+      --muted:rgba(232,232,239,.70);
+      --accent:#60d6ff;
+      --warn:#ffcc66;
+      --ok:#7dff9a;
+      --bad:#ff6b6b;
+    }
+    html,body{height:100%}
+    body{
+      margin:0;
+      background:var(--bg);
+      color:var(--text);
+      font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;
+    }
+
+    /* Blog-friendly single column */
+    #radialDepthDemo{
+      max-width:920px;
+      margin:0 auto;
+      padding:14px;
+    }
+
+    .stage{position:relative;width:100%}
+
+    canvas{
+      display:block;
+      width:100%;
+      border-radius:12px;
+      border:1px solid var(--border);
+      background:#0b0b10;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    /* Main: shorter on desktop so main + next chart fit more easily */
+    #world{
+      aspect-ratio:16/10;
+      touch-action:none;
+    }
+    @media (max-width: 520px){
+      #world{ aspect-ratio:1/1; }
+    }
+
+    /* Secondary charts: compact */
+    #radial{
+      height:clamp(175px, 30vw, 240px);
+      margin-top:10px;
+    }
+
+    /* Curve (visibility vs distance): collapsed bar stays visible */
+    #curveWrap{
+      margin-top:10px;
+      border-radius:12px;
+      border:1px solid var(--border);
+      background:var(--panel2);
+      overflow:hidden;
+    }
+    .curveBar{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:10px;
+      padding:6px 10px;
+      background:rgba(15,15,20,.70);
+      border-bottom:1px solid var(--border);
+      font-size:12px;
+      color:var(--muted);
+      user-select:none;
+    }
+    .curveTitle{font-size:12px;color:var(--muted)}
+    .curveToggle{
+      padding:4px 10px;
+      font-size:11px;
+      border-radius:999px;
+    }
+    #curveWrap.collapsed .curveBar{border-bottom:none;}
+    #curveWrap.collapsed canvas{display:none;}
+    #curve{
+      height:clamp(140px, 24vw, 200px);
+    }
+
+    .overlayBar{
+      position:absolute;
+      top:10px;
+      left:10px;
+      display:flex;
+      flex-wrap:wrap;
+      gap:8px;
+      align-items:center;
+      padding:0;
+      border-radius:12px;
+      background:transparent;
+      border:none;
+      backdrop-filter:none;
+      -webkit-backdrop-filter:none;
+      user-select:none;
+      max-width:calc(100% - 20px);
+    }
+
+    select{
+      appearance:none;
+      -webkit-appearance:none;
+      -moz-appearance:none;
+      background:rgba(15,15,20,.92);
+      border:1px solid var(--border);
+      color:var(--text);
+      padding:6px 24px 6px 10px;
+      border-radius:10px;
+      font-size:12px;
+      outline:none;
+      background-image:
+        linear-gradient(45deg, transparent 50%, rgba(232,232,239,.6) 50%),
+        linear-gradient(135deg, rgba(232,232,239,.6) 50%, transparent 50%);
+      background-position:
+        calc(100% - 14px) 50%,
+        calc(100% - 9px) 50%;
+      background-size:5px 5px;
+      background-repeat:no-repeat;
+    }
+
+    .gearBtn{
+      position:absolute;
+      right:10px;
+      bottom:10px;
+      width:36px;
+      height:36px;
+      border-radius:10px;
+      border:1px solid var(--border);
+      background:rgba(15,15,20,.92);
+      color:var(--text);
+      font-size:16px;
+      line-height:1;
+      cursor:pointer;
+      touch-action: manipulation;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      z-index:3;
+    }
+    .gearBtn:active{transform:translateY(1px)}
+
+    /* Top-right readout: now only VISIBLE / BLOCKED */
+    .readout{
+      position:absolute;
+      right:10px;
+      top:10px;
+      max-width:min(240px, calc(100% - 20px));
+      padding:8px 10px;
+      border-radius:12px;
+      background:var(--panel);
+      border:1px solid var(--border);
+      backdrop-filter:blur(6px);
+      -webkit-backdrop-filter:blur(6px);
+      font-size:12px;
+      user-select:none;
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      pointer-events:none;
+    }
+
+    .hintRow{
+      position:absolute;
+      left:10px;
+      bottom:10px;
+      padding:6px 10px;
+      border-radius:12px;
+      background:rgba(20,20,26,.72);
+      border:1px solid var(--border);
+      color:var(--muted);
+      font-size:12px;
+      user-select:none;
+      max-width:calc(100% - 20px);
+    }
+    .hintRow .short{display:none}
+    @media (max-width: 520px){
+      .hintRow .full{display:none}
+      .hintRow .short{display:inline}
+    }
+
+    .settings{
+      margin-top:10px;
+      display:none;
+      border-radius:12px;
+      border:1px solid var(--border);
+      background:var(--panel2);
+      padding:10px;
+    }
+    .settings.open{display:block}
+
+    .settingsHeader{
+      display:flex;
+      align-items:baseline;
+      justify-content:space-between;
+      gap:10px;
+      margin-bottom:8px;
+    }
+    .settingsHeader .title{font-size:13px;font-weight:650}
+    .settingsHeader .sub{font-size:12px;color:var(--muted);flex:1}
+    .btn{
+      border-radius:10px;
+      border:1px solid var(--border);
+      background:rgba(15,15,20,.92);
+      color:var(--text);
+      padding:6px 10px;
+      font-size:12px;
+      cursor:pointer;
+      touch-action: manipulation;
+    }
+    .btn:active{transform:translateY(1px)}
+
+    .grid{display:grid;grid-template-columns:1fr;gap:10px}
+    .row{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center}
+    label{display:block;font-size:12px;color:var(--muted);margin-bottom:4px}
+    input[type="range"]{width:100%;accent-color:var(--accent)}
+    .val{
+      min-width:72px;
+      text-align:right;
+      font-variant-numeric:tabular-nums;
+      font-size:12px;
+      color:var(--text);
+      opacity:.92;
+    }
+
+    .checkRow{
+      display:flex;
+      align-items:center;
+      gap:10px;
+      padding:8px 10px;
+      border:1px solid var(--border);
+      border-radius:12px;
+      background:rgba(15,15,20,.60);
+    }
+    .checkRow input{transform:scale(1.05)}
+    .checkRow .lbl{font-size:12px;color:var(--text)}
+    .checkRow .sub{font-size:11px;color:var(--muted);margin-left:auto}
+
+    .miniNote{
+      margin-top:8px;
+      font-size:11px;
+      color:var(--muted);
+      line-height:1.35;
+    }
+    .miniNote b{color:rgba(232,232,239,.92)}
+  </style>
+</head>
+
+<body>
+  <div id="radialDepthDemo">
+    <div class="stage">
+      <canvas id="world"></canvas>
+
+      <div class="overlayBar" id="overlayBar">
+        <select id="scene" aria-label="Scene">
+          <option value="doorway" selected>Doorway edge</option>
+          <option value="wall">Wall</option>
+          <option value="corner">Corner</option>
+        </select>
+
+        <select id="mode" aria-label="Visibility mode">
+          <option value="msm4" selected>Mode: MSM4</option>
+          <option value="vsm">Mode: VSM (2 moments)</option>
+          <option value="hard">Mode: Hard (mean depth)</option>
+          <option value="truth">Mode: Ground truth</option>
+          <option value="none">Mode: No occlusion</option>
+        </select>
+      </div>
+
+      <button class="gearBtn" id="gearBtn" aria-label="Settings">⚙︎</button>
+
+      <div class="readout" id="readout">…</div>
+      <div class="hintRow">
+        <span class="full">Drag the surfel • Mouse-move to place probe • Touch: tap+drag to move probe/surfel</span>
+        <span class="short">Touch: tap+drag to move probe/surfel</span>
+      </div>
+    </div>
+
+    <div class="settings" id="settingsPanel" aria-hidden="true">
+      <div class="settingsHeader">
+        <div class="title">Settings</div>
+        <div class="sub">Hidden by default for blog-friendly embedding.</div>
+        <button class="btn" id="resetBtn">Reset defaults</button>
+      </div>
+
+      <div class="grid">
+        <div>
+          <label for="filtering">Directional filtering</label>
+          <select id="filtering">
+            <option value="linear" selected>Linear (shows leakage vs MSM fix)</option>
+            <option value="nearest">Nearest</option>
+          </select>
+        </div>
+
+        <div class="row">
+          <div>
+            <label for="bins">Directional bins</label>
+            <input id="bins" type="range" min="1" max="96" step="1" value="32" />
+          </div>
+          <div class="val" id="binsVal">32</div>
+        </div>
+
+        <div class="row">
+          <div>
+            <label for="radius">Gather radius</label>
+            <input id="radius" type="range" min="120" max="420" step="1" value="240" />
+          </div>
+          <div class="val" id="radiusVal">240</div>
+        </div>
+
+        <div class="row">
+          <div>
+            <label for="shadowStrength">shadowStrength</label>
+            <input id="shadowStrength" type="range" min="0" max="5" step="0.05" value="1.2" />
+          </div>
+          <div class="val" id="shadowStrengthVal">1.20</div>
+        </div>
+
+        <div class="miniNote">
+          <b>Fixed version:</b> Depths are pre-normalized to <b>[0,1]</b> before moments are computed,
+          matching MSM’s formulation. Artist knobs (bleed/grazing/variance/normal) removed to keep this demo about the core technique.
+        </div>
+      </div>
+    </div>
+
+    <canvas id="radial"></canvas>
+
+    <div id="curveWrap" class="collapsed">
+      <div class="curveBar">
+        <div class="curveTitle">Visibility vs distance chart</div>
+        <button class="btn curveToggle" id="curveToggle" aria-expanded="false" aria-controls="curve">Expand</button>
+      </div>
+      <canvas id="curve" hidden></canvas>
+    </div>
+  </div>
+
+<script>
+(() => {
+  'use strict';
+
+  // ============================================================
+  // Small math helpers
+  // ============================================================
+  const TAU = Math.PI * 2;
+  const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
+  const clamp01 = (x) => clamp(x, 0, 1);
+  const lerp  = (a, b, t) => a + (b - a) * t;
+  const fmt   = (x, d=2) => Number.isFinite(x) ? x.toFixed(d) : '—';
+  const cross = (ax, ay, bx, by) => ax * by - ay * bx;
+
+  function wrapAngle(a) {
+    a = a % TAU;
+    return (a < 0) ? (a + TAU) : a;
+  }
+
+  function fitCanvasToCSS(canvas) {
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    const w = Math.max(2, Math.floor(rect.width  * dpr));
+    const h = Math.max(2, Math.floor(rect.height * dpr));
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+    }
+    const ctx = canvas.getContext('2d', { alpha: true });
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return ctx;
+  }
+
+  // ============================================================
+  // DOM
+  // ============================================================
+  const el = (id) => document.getElementById(id);
+
+  const worldCanvas  = el('world');
+  const radialCanvas = el('radial');
+  const curveCanvas  = el('curve');
+  const curveWrap    = el('curveWrap');
+  const curveToggle  = el('curveToggle');
+
+  const readoutEl = el('readout');
+  const settingsPanel = el('settingsPanel');
+
+  const ui = {
+    scene: el('scene'),
+    mode: el('mode'),
+    gearBtn: el('gearBtn'),
+    resetBtn: el('resetBtn'),
+
+    filtering: el('filtering'),
+    bins: el('bins'),
+    binsVal: el('binsVal'),
+    radius: el('radius'),
+    radiusVal: el('radiusVal'),
+
+    shadowStrength: el('shadowStrength'),
+    shadowStrengthVal: el('shadowStrengthVal'),
+  };
+
+  // ============================================================
+  // Defaults
+  // ============================================================
+  const DEFAULTS = {
+    scene: 'doorway',
+    mode: 'msm4',
+    filtering: 'linear',
+    bins: 32,
+    radius: 240,
+    shadowStrength: 1.2,
+    showCurve: false,
+  };
+
+  // MSM paper-recommended moment-bias (for float storage)
+  const MOMENT_BIAS_ALPHA = 2e-6;
+
+  // ============================================================
+  // Scene definitions
+  // ============================================================
+  const SCENES = {
+    doorway: {
+      surfel: { x: 0.34, y: 0.52 },
+      probe:  { x: 0.70, y: 0.36 },
+      segments: [
+        { a: {x: 0.62, y: 0.08}, b: {x: 0.62, y: 0.42} },
+        { a: {x: 0.62, y: 0.62}, b: {x: 0.62, y: 0.92} },
+      ],
+      label: 'Doorway'
+    },
+    wall: {
+      surfel: { x: 0.33, y: 0.52 },
+      probe:  { x: 0.72, y: 0.52 },
+      segments: [
+        { a: {x: 0.62, y: 0.12}, b: {x: 0.62, y: 0.88} }
+      ],
+      label: 'Wall'
+    },
+    corner: {
+      surfel: { x: 0.36, y: 0.70 },
+      probe:  { x: 0.72, y: 0.36 },
+      segments: [
+        { a: {x: 0.54, y: 0.20}, b: {x: 0.54, y: 0.80} },
+        { a: {x: 0.54, y: 0.80}, b: {x: 0.92, y: 0.80} },
+      ],
+      label: 'Corner'
+    },
+  };
+
+  // ============================================================
+  // State
+  // ============================================================
+  const state = {
+    scene: DEFAULTS.scene,
+    mode: DEFAULTS.mode,
+    filtering: DEFAULTS.filtering,
+
+    bins: DEFAULTS.bins,
+    radius: DEFAULTS.radius,
+
+    shadowStrength: DEFAULTS.shadowStrength,
+    showCurve: DEFAULTS.showCurve,
+
+    // Simulation region
+    worldW: 600,
+    worldH: 375,
+    simSize: 375,
+    simOriginX: 0,
+    simOriginY: 0,
+
+    // positions normalized
+    surfelN: { x: 0.34, y: 0.52 },
+    probeN:  { x: 0.70, y: 0.36 },
+
+    // derived positions in sim pixels
+    surfel: { x: 200, y: 200 },
+    probe:  { x: 420, y: 260 },
+
+    // scene geometry
+    segments: [],
+    sceneDef: null,
+
+    // moments: normalized [0,1] moments
+    m1: new Float32Array(0),
+    m2: new Float32Array(0),
+    m3: new Float32Array(0),
+    m4: new Float32Array(0),
+
+    // samples per bin
+    samplesPerBin: 8,
+
+    // heatmap backing
+    heat: {
+      res: 160,
+      canvas: document.createElement('canvas'),
+      ctx: null,
+      imageData: null,
+    },
+
+    // contexts
+    ctxWorld: null,
+    ctxRadial: null,
+    ctxCurve: null,
+
+    // interaction
+    activePointerId: null,
+    draggingSurfel: false,
+    draggingProbe: false,
+    lastDragInvalidate: 0,
+
+    // invalidation
+    layoutDirty: true,
+    binsDirty: true,
+    heatDirty: true,
+    framePending: false,
+  };
+
+  // ============================================================
+  // Sim region + scene application
+  // ============================================================
+  function updateDerivedPositions() {
+    state.surfel.x = state.surfelN.x * state.simSize;
+    state.surfel.y = state.surfelN.y * state.simSize;
+    state.probe.x  = state.probeN.x  * state.simSize;
+    state.probe.y  = state.probeN.y  * state.simSize;
+  }
+
+  function applySceneDef(resetPositions=true) {
+    const def = state.sceneDef;
+    if (!def) return;
+
+    state.segments = def.segments.map(seg => ({
+      ax: seg.a.x * state.simSize, ay: seg.a.y * state.simSize,
+      bx: seg.b.x * state.simSize, by: seg.b.y * state.simSize,
+    }));
+
+    if (resetPositions) {
+      state.surfelN.x = def.surfel.x; state.surfelN.y = def.surfel.y;
+      state.probeN.x  = def.probe.x;  state.probeN.y  = def.probe.y;
+    }
+    updateDerivedPositions();
+  }
+
+  function setScene(name) {
+    state.scene = name;
+    state.sceneDef = SCENES[name] || SCENES.doorway;
+    applySceneDef(true);
+    state.binsDirty = true;
+    state.heatDirty = true;
+    invalidate();
+  }
+
+  // ============================================================
+  // Geometry / ray tests (in sim pixels)
+  // ============================================================
+  function raySegmentIntersection(ox, oy, dx, dy, ax, ay, bx, by) {
+    const rx = dx, ry = dy;
+    const sx = bx - ax, sy = by - ay;
+    const qpx = ax - ox, qpy = ay - oy;
+
+    const denom = cross(rx, ry, sx, sy);
+    if (Math.abs(denom) < 1e-10) return null;
+
+    const t = cross(qpx, qpy, sx, sy) / denom;
+    const u = cross(qpx, qpy, rx, ry) / denom;
+
+    if (t >= 0 && u >= 0 && u <= 1) return t;
+    return null;
+  }
+
+  function segmentIntersects(ox, oy, px, py, ax, ay, bx, by) {
+    const rx = px - ox, ry = py - oy;
+    const sx = bx - ax, sy = by - ay;
+    const qpx = ax - ox, qpy = ay - oy;
+
+    const denom = cross(rx, ry, sx, sy);
+    if (Math.abs(denom) < 1e-10) return false;
+
+    const t = cross(qpx, qpy, sx, sy) / denom;
+    const u = cross(qpx, qpy, rx, ry) / denom;
+
+    return (t > 1e-4 && t < 0.9999 && u >= 0 && u <= 1);
+  }
+
+  function computeTrueDepthForAngle(angle) {
+    const ox = state.surfel.x, oy = state.surfel.y;
+    const dx = Math.cos(angle), dy = Math.sin(angle);
+
+    let bestT = Infinity;
+    for (const s of state.segments) {
+      const t = raySegmentIntersection(ox, oy, dx, dy, s.ax, s.ay, s.bx, s.by);
+      if (t != null && t > 1e-4 && t < bestT) bestT = t;
+    }
+
+    const r = state.radius;
+    if (!Number.isFinite(bestT)) return r;
+    return Math.min(bestT, r);
+  }
+
+  function groundTruthVisibility(px, py) {
+    const ox = state.surfel.x, oy = state.surfel.y;
+    for (const s of state.segments) {
+      if (segmentIntersects(ox, oy, px, py, s.ax, s.ay, s.bx, s.by)) return 0;
+    }
+    return 1;
+  }
+
+  // ============================================================
+  // Deterministic jitter for stratified sampling within bins
+  // ============================================================
+  function hashUint(x) {
+    x = (x >>> 0);
+    x ^= x >>> 16;
+    x = Math.imul(x, 0x7feb352d);
+    x ^= x >>> 15;
+    x = Math.imul(x, 0x846ca68b);
+    x ^= x >>> 16;
+    return (x >>> 0);
+  }
+  function hash01(seed) {
+    return hashUint(seed) / 4294967296; // [0,1)
+  }
+  function jitterInBin(bin, sample, salt) {
+    const s = (bin * 0x9e3779b1) ^ (sample * 0x85ebca6b) ^ salt;
+    const j = hash01(s);
+    return (sample + j) / Math.max(1, state.samplesPerBin);
+  }
+
+  // ============================================================
+  // Build moments with PRE-NORMALIZED depths in [0,1]
+  // ============================================================
+  function rebuildLearnedMoments() {
+    const bins = state.bins;
+    const K = Math.max(1, state.samplesPerBin);
+    const salt = 0x1234abcd;
+
+    state.m1 = new Float32Array(bins);
+    state.m2 = new Float32Array(bins);
+    state.m3 = new Float32Array(bins);
+    state.m4 = new Float32Array(bins);
+
+    for (let i = 0; i < bins; i++) {
+      let s1 = 0, s2 = 0, s3 = 0, s4 = 0;
+
+      for (let k = 0; k < K; k++) {
+        const j = jitterInBin(i, k, salt);
+        const ang = ((i + j) / bins) * TAU;
+
+        const d = computeTrueDepthForAngle(ang);
+
+        // Normalize depth to [0,1] BEFORE computing moments
+        const z = clamp01(d / Math.max(1e-6, state.radius));
+        const z2 = z * z;
+        const z3 = z2 * z;
+        const z4 = z2 * z2;
+
+        s1 += z;
+        s2 += z2;
+        s3 += z3;
+        s4 += z4;
+      }
+
+      state.m1[i] = s1 / K;
+      state.m2[i] = s2 / K;
+      state.m3[i] = s3 / K;
+      state.m4[i] = s4 / K;
+    }
+
+    state.binsDirty = false;
+    state.heatDirty = true;
+  }
+
+  // ============================================================
+  // Sampling moments (nearest / linear)
+  // ============================================================
+  function sampleMoments4(angle) {
+    const bins = state.bins;
+    const u = wrapAngle(angle) / TAU * bins;
+
+    if (state.filtering === 'nearest') {
+      const i = ((Math.floor(u) % bins) + bins) % bins;
+      return { m1: state.m1[i], m2: state.m2[i], m3: state.m3[i], m4: state.m4[i], i0: i, i1: i, w0: 1, w1: 0 };
+    }
+
+    const p = u - 0.5;
+    const i0 = ((Math.floor(p) % bins) + bins) % bins;
+    const t = p - Math.floor(p);
+    const i1 = (i0 + 1) % bins;
+
+    const w1 = t;
+    const w0 = 1 - t;
+
+    return {
+      m1: state.m1[i0] * w0 + state.m1[i1] * w1,
+      m2: state.m2[i0] * w0 + state.m2[i1] * w1,
+      m3: state.m3[i0] * w0 + state.m3[i1] * w1,
+      m4: state.m4[i0] * w0 + state.m4[i1] * w1,
+      i0, i1, w0, w1
+    };
+  }
+
+  // ============================================================
+  // MSM4 + VSM with pre-normalized moments (core technique only)
+  // ============================================================
+  function biasedMoments4(m1, m2, m3, m4, alpha) {
+    const k = 1 - alpha;
+    const h = 0.5 * alpha;
+    return [ m1 * k + h, m2 * k + h, m3 * k + h, m4 * k + h ];
+  }
+
+  function biasedMoments2(m1, m2, alpha) {
+    const k = 1 - alpha;
+    const h = 0.5 * alpha;
+    return [ m1 * k + h, m2 * k + h ];
+  }
+
+  // Stable LDLᵀ solve (MSM paper / Listing 3 pattern)
+  function solveCFromMoments(b1, b2, b3, b4, z) {
+    const eps = 1e-10;
+
+    const L32D22 = (b3 - b1 * b2);
+    const D22 = (b2 - b1 * b1);
+    const SquaredDepthVariance = (b4 - b2 * b2);
+    const D33D22 = (SquaredDepthVariance * D22) - (L32D22 * L32D22);
+
+    if (!(D22 > eps) || !(D33D22 > eps)) {
+      return { ok: false, c0: 0, c1: 0, c2: 0 };
+    }
+
+    const InvD22 = 1.0 / D22;
+    const L32 = L32D22 * InvD22;
+
+    let c0 = 1.0;
+    let c1 = z;
+    let c2 = z * z;
+
+    c1 -= b1;
+    c2 -= b2 + L32 * c1;
+
+    c1 *= InvD22;
+    c2 *= D22 / D33D22;
+
+    c1 -= L32 * c2;
+    c0 -= (c1 * b1 + c2 * b2);
+
+    return { ok: true, c0, c1, c2 };
+  }
+
+  function solveQuadraticRoots(c0, c1, c2) {
+    if (Math.abs(c2) < 1e-10) return null;
+    const p = c1 / c2;
+    const q = c0 / c2;
+    let D = (p * p) / 4 - q;
+    if (D < 0) D = 0;
+    const r = Math.sqrt(D);
+    const z1 = -(p / 2) - r;
+    const z2 = -(p / 2) + r;
+    return (z1 <= z2) ? [z1, z2] : [z2, z1];
+  }
+
+  // VSM shadow intensity (Chebyshev bound)
+  function vsm2ShadowIntensity(m1, m2, zf, momentBiasAlpha) {
+    const [b1, b2] = biasedMoments2(m1, m2, momentBiasAlpha);
+    const z = clamp01(zf);
+
+    if (z <= b1) return 0.0;
+
+    const vari = Math.max(0.0, b2 - b1 * b1);
+    const diff = z - b1;
+    const denom = vari + diff * diff;
+    if (denom <= 1e-12) return 1.0;
+    return clamp01(1.0 - (vari / denom));
+  }
+
+  // Hamburger 4MSM shadow intensity
+  function hamburger4ShadowIntensity(m1, m2, m3, m4, zf, momentBiasAlpha) {
+    const [b1, b2, b3, b4b] = biasedMoments4(m1, m2, m3, m4, momentBiasAlpha);
+    const z = clamp01(zf);
+
+    const sol = solveCFromMoments(b1, b2, b3, b4b, z);
+    if (!sol.ok) {
+      return vsm2ShadowIntensity(m1, m2, zf, momentBiasAlpha);
+    }
+
+    const roots = solveQuadraticRoots(sol.c0, sol.c1, sol.c2);
+    if (!roots) return vsm2ShadowIntensity(m1, m2, zf, momentBiasAlpha);
+
+    const z2 = roots[0];
+    const z3 = roots[1];
+
+    let shadow = 0.0;
+    if (z <= z2) {
+      shadow = 0.0;
+    } else if (z <= z3) {
+      const denom = (z3 - z2) * Math.max(1e-12, (z - z2));
+      shadow = (z * z3 - b1 * (z + z3) + b2) / denom;
+    } else {
+      const denom = Math.max(1e-12, (z - z2) * (z - z3));
+      shadow = 1.0 - (z2 * z3 - b1 * (z2 + z3) + b2) / denom;
+    }
+
+    return clamp01(shadow);
+  }
+
+  function msm4VisibilityFromMoments(sample, zfNormalized) {
+    const m1 = sample.m1, m2 = sample.m2, m3 = sample.m3, m4 = sample.m4;
+
+    let shadow = hamburger4ShadowIntensity(m1, m2, m3, m4, zfNormalized, MOMENT_BIAS_ALPHA);
+
+    // Keep shadowStrength (common knob), but remove all other artist controls.
+    shadow = clamp(shadow * Math.max(0.0, state.shadowStrength), 0.0, 1.0);
+
+    return clamp01(1.0 - shadow);
+  }
+
+  function vsmVisibilityFromMoments(sample, zfNormalized) {
+    const m1 = sample.m1, m2 = sample.m2;
+
+    let shadow = vsm2ShadowIntensity(m1, m2, zfNormalized, MOMENT_BIAS_ALPHA);
+    shadow = clamp(shadow * Math.max(0.0, state.shadowStrength), 0.0, 1.0);
+
+    return clamp01(1.0 - shadow);
+  }
+
+  // ============================================================
+  // Visibility for a point
+  // ============================================================
+  function visibilityForPoint(px, py) {
+    const ox = state.surfel.x, oy = state.surfel.y;
+    const vx = px - ox, vy = py - oy;
+    const dist = Math.hypot(vx, vy);
+    if (dist < 1e-6) return 1.0;
+
+    const angle = Math.atan2(vy, vx);
+    const sample = sampleMoments4(angle);
+
+    // Normalize query depth to [0,1] to match stored moments
+    const zfNormalized = clamp01(dist / Math.max(1e-6, state.radius));
+
+    switch (state.mode) {
+      case 'none':  return 1.0;
+      case 'truth': return groundTruthVisibility(px, py);
+      case 'hard':  return (zfNormalized <= sample.m1) ? 1.0 : 0.0;
+      case 'vsm':   return vsmVisibilityFromMoments(sample, zfNormalized);
+      case 'msm4':  return msm4VisibilityFromMoments(sample, zfNormalized);
+      default:      return 1.0;
+    }
+  }
+
+  function visibilityAlongDirection(algo, angle, distPx, sample) {
+    const zfNormalized = clamp01(distPx / Math.max(1e-6, state.radius));
+
+    if (algo === 'none') return 1.0;
+    if (algo === 'hard') return (zfNormalized <= sample.m1) ? 1.0 : 0.0;
+    if (algo === 'vsm')  return vsmVisibilityFromMoments(sample, zfNormalized);
+    if (algo === 'msm4') return msm4VisibilityFromMoments(sample, zfNormalized);
+
+    const dTrue = computeTrueDepthForAngle(angle);
+    return (distPx <= dTrue) ? 1.0 : 0.0;
+  }
+
+  const SWITCH_VIS = 0.5;
+  function findSwitchDistance(algo, angle, sample, threshold=SWITCH_VIS) {
+    const r = state.radius;
+    if (algo === 'none') return null;
+
+    if (algo === 'truth') {
+      const dTrue = computeTrueDepthForAngle(angle);
+      return (dTrue < r) ? dTrue : null;
+    }
+    if (algo === 'hard') {
+      const d = sample.m1 * r;
+      return (d < r) ? d : null;
+    }
+
+    const vR = visibilityAlongDirection(algo, angle, r, sample);
+    if (vR > threshold) return null;
+
+    let lo = 0.0, hi = r;
+    for (let i = 0; i < 26; i++) {
+      const mid = (lo + hi) * 0.5;
+      const v = visibilityAlongDirection(algo, angle, mid, sample);
+      if (v <= threshold) hi = mid;
+      else lo = mid;
+    }
+    return hi;
+  }
+
+  // ============================================================
+  // Heatmap
+  // ============================================================
+  function chooseHeatRes() {
+    return Math.round(clamp(state.simSize / 3.2, 96, 175));
+  }
+
+  function allocateHeat(res) {
+    if (state.heat.res === res && state.heat.imageData) return;
+    state.heat.res = res;
+    state.heat.canvas.width = res;
+    state.heat.canvas.height = res;
+    state.heat.ctx = state.heat.canvas.getContext('2d', { alpha: true });
+    state.heat.imageData = state.heat.ctx.createImageData(res, res);
+  }
+
+  function kernelWeight(dist, radius) {
+    const u = dist / radius;
+    if (u >= 1) return 0;
+    const t = 1 - u;
+    return t * t;
+  }
+
+  function updateHeatmap() {
+    const res = state.heat.res;
+    const img = state.heat.imageData;
+    const data = img.data;
+
+    const S = state.simSize;
+    const r = state.radius;
+
+    for (let y = 0; y < res; y++) {
+      const wy = (y + 0.5) / res * S;
+      for (let x = 0; x < res; x++) {
+        const wx = (x + 0.5) / res * S;
+
+        const dx = wx - state.surfel.x;
+        const dy = wy - state.surfel.y;
+        const dist = Math.hypot(dx, dy);
+
+        let intensity = 0;
+        if (dist <= r) {
+          const w = kernelWeight(dist, r);
+          const v = visibilityForPoint(wx, wy);
+          intensity = clamp01(w * v * 1.25);
+        }
+
+        const idx = (y * res + x) * 4;
+
+        const R = Math.floor(255 * intensity);
+        const G = Math.floor(200 * intensity);
+        const B = Math.floor(90  * intensity);
+        const A = Math.floor(255 * clamp01(intensity * 1.15));
+
+        data[idx + 0] = R;
+        data[idx + 1] = G;
+        data[idx + 2] = B;
+        data[idx + 3] = A;
+      }
+    }
+
+    state.heat.ctx.putImageData(img, 0, 0);
+    state.heatDirty = false;
+  }
+
+  // ============================================================
+  // Drawing
+  // ============================================================
+  function drawWorld() {
+    const ctx = state.ctxWorld;
+    const W = state.worldW, H = state.worldH;
+    const S = state.simSize;
+    const ox = state.simOriginX, oy = state.simOriginY;
+
+    ctx.clearRect(0, 0, W, H);
+
+    // sim region frame
+    ctx.save();
+    ctx.strokeStyle = 'rgba(170,170,200,0.18)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(ox + 0.5, oy + 0.5, S - 1, S - 1);
+    ctx.restore();
+
+    // heatmap
+    ctx.save();
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(state.heat.canvas, ox, oy, S, S);
+    ctx.restore();
+
+    ctx.save();
+    ctx.translate(ox, oy);
+
+    // occluders
+    ctx.save();
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = 'rgba(245,245,255,0.95)';
+    ctx.beginPath();
+    for (const s of state.segments) {
+      ctx.moveTo(s.ax, s.ay);
+      ctx.lineTo(s.bx, s.by);
+    }
+    ctx.stroke();
+    ctx.restore();
+
+    // gather radius
+    ctx.save();
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = 'rgba(160,160,190,0.65)';
+    ctx.setLineDash([6, 6]);
+    ctx.beginPath();
+    ctx.arc(state.surfel.x, state.surfel.y, state.radius, 0, TAU);
+    ctx.stroke();
+    ctx.restore();
+
+    // probe line
+    const vProbe = visibilityForPoint(state.probe.x, state.probe.y);
+    ctx.save();
+    ctx.lineWidth = 2.2;
+    ctx.strokeStyle = (vProbe > 0.5) ? 'rgba(125,255,154,0.92)' : 'rgba(255,107,107,0.92)';
+    ctx.beginPath();
+    ctx.moveTo(state.surfel.x, state.surfel.y);
+    ctx.lineTo(state.probe.x, state.probe.y);
+    ctx.stroke();
+    ctx.restore();
+
+    // probe point
+    ctx.save();
+    ctx.fillStyle = 'rgba(255,255,255,0.96)';
+    ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(state.probe.x, state.probe.y, 5.2, 0, TAU);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+
+    // surfel point
+    ctx.save();
+    ctx.fillStyle = 'rgba(96,214,255,1)';
+    ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(state.surfel.x, state.surfel.y, 7.2, 0, TAU);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+
+    ctx.restore(); // translate
+  }
+
+  function drawRadial() {
+    const ctx = state.ctxRadial;
+    const rect = radialCanvas.getBoundingClientRect();
+    const cw = rect.width;
+    const ch = rect.height;
+
+    ctx.clearRect(0, 0, cw, ch);
+
+    const cx = cw / 2, cy = ch / 2;
+    const rMax = Math.min(cw, ch) * 0.42;
+    const rMin = rMax * 0.16;
+
+    const vx = state.probe.x - state.surfel.x;
+    const vy = state.probe.y - state.surfel.y;
+    const probeDist = Math.hypot(vx, vy);
+    const probeAng = Math.atan2(vy, vx);
+    const sample = sampleMoments4(probeAng);
+
+    const dTrue = computeTrueDepthForAngle(probeAng);
+    const vProbe = visibilityForPoint(state.probe.x, state.probe.y);
+    const dSwitch = findSwitchDistance(state.mode, probeAng, sample, SWITCH_VIS);
+
+    // Background rings
+    ctx.save();
+    ctx.strokeStyle = 'rgba(170,170,200,0.30)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(cx, cy, rMax, 0, TAU); ctx.stroke();
+    ctx.beginPath(); ctx.arc(cx, cy, rMin, 0, TAU); ctx.stroke();
+    ctx.restore();
+
+    // Wedges: mean depth per bin (m1 is normalized)
+    const bins = state.bins;
+    for (let i = 0; i < bins; i++) {
+      const ang0 = (i / bins) * TAU;
+      const ang1 = ((i + 1) / bins) * TAU;
+
+      const t = clamp01(state.m1[i]);
+      const rr = lerp(rMin, rMax, t);
+
+      const near = 1 - t;
+      const a = 0.08 + 0.62 * near;
+      ctx.fillStyle = `rgba(96,214,255,${a.toFixed(3)})`;
+
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.arc(cx, cy, rr, ang0, ang1);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    // Highlight sampled bins
+    ctx.save();
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = 'rgba(255,204,102,0.95)';
+    const hi = (state.filtering === 'nearest') ? [sample.i0] : [sample.i0, sample.i1];
+    for (const i of hi) {
+      const ang0 = (i / bins) * TAU;
+      const ang1 = ((i + 1) / bins) * TAU;
+      ctx.beginPath();
+      ctx.arc(cx, cy, rMax + 2, ang0, ang1);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    // Probe direction ray
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+    ctx.lineWidth = 2;
+    const lx = cx + Math.cos(probeAng) * (rMax + 6);
+    const ly = cy + Math.sin(probeAng) * (rMax + 6);
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(lx, ly);
+    ctx.stroke();
+    ctx.restore();
+
+    function polarPoint(dist) {
+      const t = clamp01(dist / state.radius);
+      const rr = lerp(rMin, rMax, t);
+      return { x: cx + Math.cos(probeAng) * rr, y: cy + Math.sin(probeAng) * rr, rr };
+    }
+
+    // True blocker marker (⊥ tick)
+    const pTrue = polarPoint(dTrue);
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,255,255,0.92)';
+    ctx.lineWidth = 3;
+    const tx = -Math.sin(probeAng), ty = Math.cos(probeAng);
+    const len = 9;
+    ctx.beginPath();
+    ctx.moveTo(pTrue.x - tx * len, pTrue.y - ty * len);
+    ctx.lineTo(pTrue.x + tx * len, pTrue.y + ty * len);
+    ctx.stroke();
+    ctx.restore();
+
+    // Switch distance ring
+    if (dSwitch != null) {
+      const pS = polarPoint(dSwitch);
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255,204,102,0.95)';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.arc(pS.x, pS.y, 6.5, 0, TAU);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // Probe marker
+    const pP = polarPoint(probeDist);
+    ctx.save();
+    const isVis = vProbe > 0.5;
+    const col = isVis ? '125,255,154' : '255,107,107';
+    const a = 0.35 + 0.65 * vProbe;
+    ctx.fillStyle = `rgba(${col},${a.toFixed(3)})`;
+    ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(pP.x, pP.y, 6.2, 0, TAU);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+
+    // Labels (left)
+    ctx.save();
+    ctx.font = '12px ui-sans-serif, system-ui';
+    ctx.fillStyle = 'rgba(232,232,239,0.92)';
+    ctx.fillText('Radial moments (pre-normalized [0,1]) + probe', 10, 18);
+
+    ctx.fillStyle = 'rgba(169,169,183,0.95)';
+    ctx.fillText(`mode=${state.mode}  filtering=${state.filtering}  bins=${state.bins}`, 10, 36);
+    ctx.restore();
+
+    // Legend + stats (right-aligned)
+    const xR = cw - 12;
+    let yR = 18;
+
+    ctx.save();
+    ctx.font = '12px ui-sans-serif, system-ui';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'top';
+
+    // Legend (right aligned)
+    ctx.fillStyle = 'rgba(255,255,255,0.90)';
+    ctx.fillText('⊥ tick = true blocker', xR, yR); yR += 16;
+
+    ctx.fillStyle = 'rgba(255,204,102,0.95)';
+    ctx.fillText('ring = d@50% vis', xR, yR); yR += 16;
+
+    ctx.fillStyle = 'rgba(125,255,154,0.90)';
+    ctx.fillText('dot = probe', xR, yR); yR += 18;
+
+    // Divider
+    ctx.fillStyle = 'rgba(169,169,183,0.55)';
+    ctx.fillText('—', xR, yR); yR += 10;
+
+    // Raw stats (right aligned, line by line)
+    const d50Text = (dSwitch == null) ? '—' : `${Math.round(dSwitch)} px`;
+    ctx.fillStyle = 'rgba(232,232,239,0.92)';
+    ctx.fillText(`vis: ${fmt(vProbe, 3)}`, xR, yR); yR += 16;
+    ctx.fillText(`dist: ${Math.round(probeDist)} px`, xR, yR); yR += 16;
+    ctx.fillText(`d@50%: ${d50Text}`, xR, yR); yR += 16;
+    ctx.fillText(`true: ${Math.round(dTrue)} px`, xR, yR); yR += 16;
+
+    ctx.restore();
+  }
+
+  function drawCurve() {
+    if (!state.showCurve) return;
+
+    const ctx = state.ctxCurve;
+    const rect = curveCanvas.getBoundingClientRect();
+    const cw = rect.width;
+    const ch = rect.height;
+
+    ctx.clearRect(0, 0, cw, ch);
+
+    const padL = 34, padR = 10, padT = 18, padB = 22;
+    const gx0 = padL, gy0 = padT;
+    const gx1 = cw - padR, gy1 = ch - padB;
+    const gw = gx1 - gx0, gh = gy1 - gy0;
+
+    const vx = state.probe.x - state.surfel.x;
+    const vy = state.probe.y - state.surfel.y;
+    const probeDist = Math.hypot(vx, vy);
+    const ang = Math.atan2(vy, vx);
+    const sample = sampleMoments4(ang);
+    const dTrue = computeTrueDepthForAngle(ang);
+
+    const xOf = (t) => gx0 + (t / state.radius) * gw;
+    const yOf = (v) => gy1 - clamp01(v) * gh;
+
+    // axes + grid
+    ctx.save();
+    ctx.strokeStyle = 'rgba(170,170,200,0.30)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(gx0, gy1); ctx.lineTo(gx1, gy1);
+    ctx.moveTo(gx0, gy0); ctx.lineTo(gx0, gy1);
+    ctx.stroke();
+
+    for (let i = 0; i <= 4; i++) {
+      const v = i / 4;
+      const yy = yOf(v);
+      ctx.strokeStyle = 'rgba(170,170,200,0.10)';
+      ctx.beginPath(); ctx.moveTo(gx0, yy); ctx.lineTo(gx1, yy); ctx.stroke();
+    }
+    for (let i = 0; i <= 5; i++) {
+      const t = i / 5 * state.radius;
+      const xx = xOf(t);
+      ctx.strokeStyle = 'rgba(170,170,200,0.08)';
+      ctx.beginPath(); ctx.moveTo(xx, gy0); ctx.lineTo(xx, gy1); ctx.stroke();
+    }
+    ctx.restore();
+
+    // truth step
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,255,255,0.80)';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 6]);
+    ctx.beginPath();
+    ctx.moveTo(xOf(0), yOf(1));
+    ctx.lineTo(xOf(dTrue), yOf(1));
+    ctx.lineTo(xOf(dTrue), yOf(0));
+    ctx.lineTo(xOf(state.radius), yOf(0));
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+
+    function plotAlgo(algo, rgba) {
+      const selected = (state.mode === algo);
+      ctx.save();
+      ctx.strokeStyle = rgba;
+      ctx.lineWidth = selected ? 3.2 : 2;
+      ctx.globalAlpha = selected ? 1.0 : 0.65;
+
+      ctx.beginPath();
+      const N = 140;
+      for (let i = 0; i <= N; i++) {
+        const t = i / N * state.radius;
+        const v = visibilityAlongDirection(algo, ang, t, sample);
+        const xx = xOf(t);
+        const yy = yOf(v);
+        if (i === 0) ctx.moveTo(xx, yy);
+        else ctx.lineTo(xx, yy);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    plotAlgo('vsm',  'rgba(255,204,102,0.95)');
+    plotAlgo('msm4', 'rgba(96,214,255,0.95)');
+
+    // probe distance line
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,255,255,0.75)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(xOf(clamp(probeDist, 0, state.radius)), gy0);
+    ctx.lineTo(xOf(clamp(probeDist, 0, state.radius)), gy1);
+    ctx.stroke();
+    ctx.restore();
+
+    // labels
+    ctx.save();
+    ctx.font = '12px ui-sans-serif, system-ui';
+    ctx.fillStyle = 'rgba(232,232,239,0.92)';
+    ctx.fillText('Visibility vs distance (VSM vs MSM4 along current probe direction)', 10, 14);
+
+    ctx.font = '11px ui-sans-serif, system-ui';
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    ctx.fillText('truth', 12, ch - 7);
+    ctx.fillStyle = 'rgba(255,204,102,0.95)';
+    ctx.fillText('VSM', 54, ch - 7);
+    ctx.fillStyle = 'rgba(96,214,255,0.95)';
+    ctx.fillText('MSM4', 92, ch - 7);
+
+    ctx.fillStyle = 'rgba(169,169,183,0.95)';
+    ctx.fillText('1', gx0 - 16, gy0 + 4);
+    ctx.fillText('0', gx0 - 16, gy1 + 4);
+    ctx.fillText('0', gx0 - 10, gy1 + 14);
+    ctx.fillText(`${Math.round(state.radius)}`, gx1 - 18, gy1 + 14);
+    ctx.restore();
+  }
+
+  function updateReadout() {
+    const vProbe = visibilityForPoint(state.probe.x, state.probe.y);
+    const status = (vProbe > 0.5) ? 'VISIBLE' : 'BLOCKED';
+    const col = (vProbe > 0.5) ? 'var(--ok)' : 'var(--bad)';
+    readoutEl.innerHTML = `<span style="color:${col}; font-weight:650;">${status}</span>`;
+  }
+
+  // ============================================================
+  // Invalidation-driven rendering
+  // ============================================================
+  function invalidate() {
+    if (state.framePending) return;
+    state.framePending = true;
+    requestAnimationFrame(render);
+  }
+
+  function layout() {
+    state.ctxWorld  = fitCanvasToCSS(worldCanvas);
+    state.ctxRadial = fitCanvasToCSS(radialCanvas);
+
+    if (state.showCurve) {
+      state.ctxCurve = fitCanvasToCSS(curveCanvas);
+    }
+
+    const rect = worldCanvas.getBoundingClientRect();
+    state.worldW = rect.width;
+    state.worldH = rect.height;
+
+    state.simSize = Math.min(state.worldW, state.worldH);
+    state.simOriginX = (state.worldW - state.simSize) * 0.5;
+    state.simOriginY = (state.worldH - state.simSize) * 0.5;
+
+    allocateHeat(chooseHeatRes());
+    applySceneDef(false);
+
+    state.layoutDirty = false;
+    state.binsDirty = true;
+    state.heatDirty = true;
+  }
+
+  function render() {
+    state.framePending = false;
+
+    if (state.layoutDirty) layout();
+    if (state.binsDirty) rebuildLearnedMoments();
+    if (state.heatDirty) updateHeatmap();
+
+    drawWorld();
+    drawRadial();
+    if (state.showCurve) drawCurve();
+    updateReadout();
+  }
+
+  // ============================================================
+  // Interaction
+  // ============================================================
+  function canvasToSim(evt) {
+    const rect = worldCanvas.getBoundingClientRect();
+    const x = (evt.clientX - rect.left);
+    const y = (evt.clientY - rect.top);
+
+    const sx = x - state.simOriginX;
+    const sy = y - state.simOriginY;
+
+    const inside = (sx >= 0 && sy >= 0 && sx <= state.simSize && sy <= state.simSize);
+    return { inside, x: clamp(sx, 0, state.simSize), y: clamp(sy, 0, state.simSize) };
+  }
+
+  function setSurfelFromSim(x, y) {
+    state.surfelN.x = clamp01(x / state.simSize);
+    state.surfelN.y = clamp01(y / state.simSize);
+    updateDerivedPositions();
+    state.binsDirty = true;
+    state.heatDirty = true;
+  }
+
+  function setProbeFromSim(x, y) {
+    state.probeN.x = clamp01(x / state.simSize);
+    state.probeN.y = clamp01(y / state.simSize);
+    updateDerivedPositions();
+  }
+
+  function onPointerDown(e) {
+    const p = canvasToSim(e);
+    if (!p.inside && e.pointerType === 'mouse') return;
+
+    try { worldCanvas.setPointerCapture?.(e.pointerId); } catch (_) {}
+    state.activePointerId = e.pointerId;
+
+    const dx = p.x - state.surfel.x;
+    const dy = p.y - state.surfel.y;
+    const d = Math.hypot(dx, dy);
+
+    const hitR = 22;
+
+    if (d <= hitR) {
+      state.draggingSurfel = true;
+      state.draggingProbe = false;
+
+      allocateHeat(Math.round(chooseHeatRes() * 0.75));
+      setSurfelFromSim(p.x, p.y);
+      invalidate();
+    } else {
+      state.draggingProbe = true;
+      state.draggingSurfel = false;
+
+      setProbeFromSim(p.x, p.y);
+      invalidate();
+    }
+
+    if (e.pointerType !== 'mouse') e.preventDefault();
+  }
+
+  function onPointerMove(e) {
+    const p = canvasToSim(e);
+
+    if (state.activePointerId === e.pointerId && (state.draggingSurfel || state.draggingProbe)) {
+      if (state.draggingSurfel) {
+        setSurfelFromSim(p.x, p.y);
+
+        const now = performance.now();
+        if (now - state.lastDragInvalidate > 32) {
+          state.lastDragInvalidate = now;
+          invalidate();
+        }
+      } else if (state.draggingProbe) {
+        setProbeFromSim(p.x, p.y);
+        invalidate();
+      }
+
+      if (e.pointerType !== 'mouse') e.preventDefault();
+      return;
+    }
+
+    if (e.pointerType === 'mouse' && p.inside) {
+      setProbeFromSim(p.x, p.y);
+      invalidate();
+    }
+  }
+
+  function onPointerUp(e) {
+    if (state.activePointerId === e.pointerId) {
+      state.activePointerId = null;
+      state.draggingSurfel = false;
+      state.draggingProbe = false;
+
+      allocateHeat(chooseHeatRes());
+      state.binsDirty = true;
+      state.heatDirty = true;
+
+      try { worldCanvas.releasePointerCapture?.(e.pointerId); } catch (_) {}
+      invalidate();
+    }
+  }
+
+  worldCanvas.addEventListener('pointerdown', onPointerDown, { passive: false });
+  worldCanvas.addEventListener('pointermove', onPointerMove, { passive: false });
+  worldCanvas.addEventListener('pointerup', onPointerUp, { passive: true });
+  worldCanvas.addEventListener('pointercancel', onPointerUp, { passive: true });
+
+  el('overlayBar').addEventListener('pointerdown', (e) => e.stopPropagation());
+  el('overlayBar').addEventListener('pointermove', (e) => e.stopPropagation());
+
+  // ============================================================
+  // UI wiring
+  // ============================================================
+  function setRange(rangeEl, valEl, getFmt, onInput) {
+    const update = () => {
+      onInput(parseFloat(rangeEl.value));
+      valEl.textContent = getFmt();
+      invalidate();
+    };
+    rangeEl.addEventListener('input', update);
+    update();
+  }
+
+  function applyCurveState(open, opts = {}) {
+    const { invalidateLayout = true } = opts;
+    state.showCurve = open;
+    curveWrap.classList.toggle('open', open);
+    curveWrap.classList.toggle('collapsed', !open);
+    curveCanvas.hidden = !open;
+    curveToggle.textContent = open ? 'Collapse' : 'Expand';
+    curveToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (invalidateLayout) state.layoutDirty = true;
+  }
+
+  ui.scene.addEventListener('change', () => setScene(ui.scene.value));
+
+  ui.mode.addEventListener('change', () => {
+    state.mode = ui.mode.value;
+    state.heatDirty = true;
+    invalidate();
+  });
+
+  ui.gearBtn.addEventListener('click', () => {
+    const open = settingsPanel.classList.toggle('open');
+    settingsPanel.setAttribute('aria-hidden', open ? 'false' : 'true');
+  });
+
+  ui.resetBtn.addEventListener('click', () => {
+    ui.scene.value = DEFAULTS.scene;
+    ui.mode.value = DEFAULTS.mode;
+    ui.filtering.value = DEFAULTS.filtering;
+
+    ui.bins.value = DEFAULTS.bins;
+    ui.radius.value = DEFAULTS.radius;
+    ui.shadowStrength.value = DEFAULTS.shadowStrength;
+
+    state.scene = DEFAULTS.scene;
+    state.mode = DEFAULTS.mode;
+    state.filtering = DEFAULTS.filtering;
+
+    state.bins = DEFAULTS.bins;
+    state.radius = DEFAULTS.radius;
+    state.shadowStrength = DEFAULTS.shadowStrength;
+    applyCurveState(DEFAULTS.showCurve, { invalidateLayout: false });
+
+    ui.binsVal.textContent = `${DEFAULTS.bins}`;
+    ui.radiusVal.textContent = `${DEFAULTS.radius}`;
+    ui.shadowStrengthVal.textContent = fmt(DEFAULTS.shadowStrength, 2);
+
+    setScene(DEFAULTS.scene);
+
+    state.layoutDirty = true;
+    state.binsDirty = true;
+    state.heatDirty = true;
+    invalidate();
+  });
+
+  ui.filtering.addEventListener('change', () => {
+    state.filtering = ui.filtering.value;
+    state.heatDirty = true;
+    invalidate();
+  });
+
+  setRange(ui.bins, ui.binsVal, () => `${Math.round(state.bins)}`, (v) => {
+    state.bins = Math.round(v);
+    state.binsDirty = true;
+    state.heatDirty = true;
+  });
+
+  setRange(ui.radius, ui.radiusVal, () => `${Math.round(state.radius)}`, (v) => {
+    state.radius = Math.round(v);
+    state.binsDirty = true;
+    state.heatDirty = true;
+  });
+
+  setRange(ui.shadowStrength, ui.shadowStrengthVal, () => fmt(state.shadowStrength, 2), (v) => {
+    state.shadowStrength = v;
+    state.heatDirty = true;
+  });
+
+  curveToggle.addEventListener('click', () => {
+    applyCurveState(!state.showCurve);
+    invalidate();
+  });
+
+  window.addEventListener('resize', () => {
+    state.layoutDirty = true;
+    invalidate();
+  });
+
+  // ============================================================
+  // Init
+  // ============================================================
+  state.sceneDef = SCENES[state.scene];
+  state.mode = ui.mode.value;
+  state.filtering = ui.filtering.value;
+
+  ui.scene.value = DEFAULTS.scene;
+  ui.mode.value = DEFAULTS.mode;
+  ui.filtering.value = DEFAULTS.filtering;
+
+  ui.bins.value = DEFAULTS.bins;
+  ui.radius.value = DEFAULTS.radius;
+  ui.shadowStrength.value = DEFAULTS.shadowStrength;
+
+  ui.binsVal.textContent = `${DEFAULTS.bins}`;
+  ui.radiusVal.textContent = `${DEFAULTS.radius}`;
+  ui.shadowStrengthVal.textContent = fmt(DEFAULTS.shadowStrength, 2);
+
+  applyCurveState(DEFAULTS.showCurve, { invalidateLayout: false });
+
+  applySceneDef(true);
+
+  invalidate();
+})();
+</script>
+</body>
+</html>

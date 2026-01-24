@@ -1,0 +1,552 @@
+diff --git a/eslint.config.js b/eslint.config.js
+deleted file mode 100644
+index 87233ca..0000000
+--- a/eslint.config.js
++++ /dev/null
+@@ -1,72 +0,0 @@
+-import js from '@eslint/js';
+-import tseslint from 'typescript-eslint';
+-import vitest from '@vitest/eslint-plugin';
+-import globals from 'globals';
+-import mdcs from 'eslint-config-mdcs';
+-
+-export default [
+-	// files to ignore
+-	{
+-		name: 'files to ignore',
+-		ignores: [
+-			'**/*.generated.js',
+-			'**/node_modules/**',
+-			'**/build/**',
+-		],
+-	},
+-
+-	// recommended
+-	js.configs.recommended,
+-
+-	// base rules
+-	{
+-		name: 'base rules',
+-		files: [ '**/*.js', '**/*.ts' ],
+-		languageOptions: {
+-			ecmaVersion: 2020,
+-			sourceType: 'module',
+-			globals: {
+-				...globals.browser,
+-				...globals.node,
+-			},
+-		},
+-		rules: {
+-			...mdcs.rules,
+-			'no-mixed-spaces-and-tabs': 'error',
+-		},
+-	},
+-
+-	// ts recommended
+-	...tseslint.configs.recommended.map( config => ( {
+-		...config,
+-		files: [ '**/*.ts' ],
+-	} ) ),
+-
+-	// ts rule overrides
+-	{
+-		name: 'ts rule overrides',
+-		files: [ '**/*.ts' ],
+-		rules: {
+-			'no-unused-vars': 'off',
+-			'@typescript-eslint/no-unused-vars': 'off',
+-		},
+-	},
+-
+-	// vitest
+-	{
+-		name: 'vitest rules',
+-		files: [ '**/*.test.js', '**/*.test.ts' ],
+-		plugins: {
+-			vitest,
+-		},
+-		languageOptions: {
+-			globals: {
+-				...vitest.environments.env.globals,
+-			},
+-		},
+-		rules: {
+-			...vitest.configs.recommended.rules,
+-			'vitest/valid-describe-callback': 0,
+-		},
+-	},
+-];
+diff --git a/example/webgpu_gpuPathTracingSimple.js b/example/webgpu_gpuPathTracingSimple.js
+index 708e389..124d33d 100644
+--- a/example/webgpu_gpuPathTracingSimple.js
++++ b/example/webgpu_gpuPathTracingSimple.js
+@@ -79,6 +79,11 @@ function init() {
+ 	const geom_normals = new StorageBufferAttribute( knotGeometry.attributes.normal.array, 3 );
+ 	const bvhNodes = new StorageBufferAttribute( new Float32Array( bvh._roots[ 0 ] ), 8 );
+ 
++	const bvhIndex = storage( geom_index, 'uvec3', geom_index.count ).toReadOnly().setName( 'bvh_index' );
++	const bvhPosition = storage( geom_position, 'vec3', geom_position.count ).toReadOnly().setName( 'bvh_position' );
++	const bvhAttribute = storage( geom_normals, 'vec3', geom_normals.count ).toReadOnly().setName( 'bvh_attribute' );
++	const bvhNodesBuffer = storage( bvhNodes, 'BVHNode', bvhNodes.count ).toReadOnly().setName( 'bvh' );
++
+ 	const computeShaderParams = {
+ 		outputTex: textureStore( outputTex ),
+ 		smoothNormals: uniform( 1 ),
+@@ -87,12 +92,6 @@ function init() {
+ 		inverseProjectionMatrix: uniform( new THREE.Matrix4() ),
+ 		cameraToModelMatrix: uniform( new THREE.Matrix4() ),
+ 
+-		// bvh and geometry definition
+-		geom_index: storage( geom_index, 'uvec3', geom_index.count ).toReadOnly(),
+-		geom_position: storage( geom_position, 'vec3', geom_position.count ).toReadOnly(),
+-		geom_normals: storage( geom_normals, 'vec3', geom_normals.count ).toReadOnly(),
+-		bvh: storage( bvhNodes, 'BVHNode', bvhNodes.count ).toReadOnly(),
+-
+ 		// compute variables
+ 		workgroupSize: uniform( new THREE.Vector3() ),
+ 		workgroupId: workgroupId,
+@@ -106,10 +105,6 @@ function init() {
+ 			smoothNormals: u32,
+ 			inverseProjectionMatrix: mat4x4f,
+ 			cameraToModelMatrix: mat4x4f,
+-			geom_position: ptr<storage, array<vec3f>, read>,
+-			geom_index: ptr<storage, array<vec3u>, read>,
+-			geom_normals: ptr<storage, array<vec3f>, read>,
+-			bvh: ptr<storage, array<BVHNode>, read>,
+ 			workgroupSize: vec3u,
+ 			workgroupId: vec3u,
+ 			localId: vec3u,
+@@ -125,14 +120,14 @@ function init() {
+ 			var ray = ndcToCameraRay( ndc, cameraToModelMatrix * inverseProjectionMatrix );
+ 
+ 			// get hit result
+-			let hitResult = bvhIntersectFirstHit( geom_index, geom_position, bvh, ray );
++			let hitResult = bvhIntersectFirstHit( ray );
+ 
+ 			// write result
+ 			if ( hitResult.didHit && hitResult.dist < 1.0 ) {
+ 
+ 				let normal = select(
+ 					hitResult.normal,
+-					normalize( getVertexAttribute( hitResult.barycoord, hitResult.indices.xyz, geom_normals ) ),
++					normalize( getVertexAttribute( hitResult.barycoord, hitResult.indices.xyz ) ),
+ 					smoothNormals > 0u,
+ 				);
+ 				textureStore( outputTex, indexUV, vec4f( normal, 1.0 ) );
+@@ -145,7 +140,15 @@ function init() {
+ 			}
+ 
+ 		}
+-	`, [ ndcToCameraRay, bvhIntersectFirstHit, getVertexAttribute ] );
++	`, [
++		ndcToCameraRay,
++		bvhIntersectFirstHit,
++		getVertexAttribute,
++		bvhIndex,
++		bvhPosition,
++		bvhAttribute,
++		bvhNodesBuffer,
++	] );
+ 
+ 	computeKernel = computeShader( computeShaderParams ).computeKernel( WORKGROUP_SIZE );
+ 
+diff --git a/example/webgpu_sdfGeneration.js b/example/webgpu_sdfGeneration.js
+index 68786ad..5e7139b 100644
+--- a/example/webgpu_sdfGeneration.js
++++ b/example/webgpu_sdfGeneration.js
+@@ -103,14 +103,14 @@ async function init() {
+ 	const geom_position = new THREE.StorageBufferAttribute( mesh.geometry.attributes.position.array, 3 );
+ 	const bvhNodes = new THREE.StorageBufferAttribute( new Float32Array( bvh._roots[ 0 ] ), 8 );
+ 
++	const bvhIndex = storage( geom_index, 'uvec3', geom_index.count ).toReadOnly().setName( 'bvh_index' );
++	const bvhPosition = storage( geom_position, 'vec3', geom_position.count ).toReadOnly().setName( 'bvh_position' );
++	const bvhNodesBuffer = storage( bvhNodes, 'BVHNode', bvhNodes.count ).toReadOnly().setName( 'bvh' );
++
+ 	const computeShaderParams = {
+ 		matrix: uniform( new THREE.Matrix4() ),
+ 		dim: uniform( 0 ),
+ 
+-		bvh_index: storage( geom_index, 'uvec3', geom_index.count ).toReadOnly(),
+-		bvh_position: storage( geom_position, 'vec3', geom_position.count ).toReadOnly(),
+-		bvh: storage( bvhNodes, 'BVHNode', bvhNodes.count ).toReadOnly(),
+-
+ 		globalId: globalId,
+ 		output: storageTexture( sdfTex ),
+ 	};
+@@ -118,10 +118,6 @@ async function init() {
+ 	const computeShader = wgslFn( /* wgsl */ `
+ 
+ 		fn computeSdf(
+-			bvh_index: ptr<storage, array<vec3u>, read>,
+-			bvh_position: ptr<storage, array<vec3f>, read>,
+-			bvh: ptr<storage, array<BVHNode>, read>,
+-
+ 			matrix: mat4x4f,
+ 			dim: u32,
+ 			globalId: vec3u,
+@@ -148,14 +144,14 @@ async function init() {
+ 			) * matrix;
+ 			let point = pointHomo.xyz / pointHomo.w;
+ 
+-			let res = bvhClosestPointToPoint(bvh_index, bvh_position, bvh, point, 10000.0);
++			let res = bvhClosestPointToPoint(point, 10000.0);
+ 			let value = res.side * sqrt( res.distanceSq );
+ 
+ 			let mipLevel = 0;
+ 			textureStore(output, globalId, vec4f(value, 0.0, 0.0, 0.0));
+ 		}
+ 
+-	`, [ closestPointToPoint ] );
++	`, [ closestPointToPoint, bvhIndex, bvhPosition, bvhNodesBuffer ] );
+ 
+ 	computeKernel = computeShader( computeShaderParams ).computeKernel( WORKGROUP_SIZE );
+ 
+diff --git a/package-lock.json b/package-lock.json
+index 816a33a..b6cc23e 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -28,7 +28,7 @@
+         "simple-git": "^3.19.1",
+         "simplex-noise": "^2.4.0",
+         "stats.js": "^0.17.0",
+-        "three": "^0.179.0",
++        "three": "^0.182.0",
+         "typescript": "^5.9.2",
+         "typescript-eslint": "^8.48.1",
+         "vite": "^6.2.2",
+@@ -5276,9 +5276,9 @@
+       }
+     },
+     "node_modules/three": {
+-      "version": "0.179.1",
+-      "resolved": "https://registry.npmjs.org/three/-/three-0.179.1.tgz",
+-      "integrity": "sha512-5y/elSIQbrvKOISxpwXCR4sQqHtGiOI+MKLc3SsBdDXA2hz3Mdp3X59aUp8DyybMa34aeBwbFTpdoLJaUDEWSw==",
++      "version": "0.182.0",
++      "resolved": "https://registry.npmjs.org/three/-/three-0.182.0.tgz",
++      "integrity": "sha512-GbHabT+Irv+ihI1/f5kIIsZ+Ef9Sl5A1Y7imvS5RQjWgtTPfPnZ43JmlYI7NtCRDK9zir20lQpfg8/9Yd02OvQ==",
+       "dev": true,
+       "license": "MIT"
+     },
+@@ -9527,9 +9527,9 @@
+       }
+     },
+     "three": {
+-      "version": "0.179.1",
+-      "resolved": "https://registry.npmjs.org/three/-/three-0.179.1.tgz",
+-      "integrity": "sha512-5y/elSIQbrvKOISxpwXCR4sQqHtGiOI+MKLc3SsBdDXA2hz3Mdp3X59aUp8DyybMa34aeBwbFTpdoLJaUDEWSw==",
++      "version": "0.182.0",
++      "resolved": "https://registry.npmjs.org/three/-/three-0.182.0.tgz",
++      "integrity": "sha512-GbHabT+Irv+ihI1/f5kIIsZ+Ef9Sl5A1Y7imvS5RQjWgtTPfPnZ43JmlYI7NtCRDK9zir20lQpfg8/9Yd02OvQ==",
+       "dev": true
+     },
+     "tinybench": {
+diff --git a/package.json b/package.json
+index 0975e2b..62007a9 100644
+--- a/package.json
++++ b/package.json
+@@ -83,7 +83,7 @@
+     "simple-git": "^3.19.1",
+     "simplex-noise": "^2.4.0",
+     "stats.js": "^0.17.0",
+-    "three": "^0.179.0",
++    "three": "^0.182.0",
+     "typescript": "^5.9.2",
+     "typescript-eslint": "^8.48.1",
+     "vite": "^6.2.2",
+diff --git a/src/webgpu/bvh_ray_functions.wgsl.js b/src/webgpu/bvh_ray_functions.wgsl.js
+index 91c4c5b..236e7ee 100644
+--- a/src/webgpu/bvh_ray_functions.wgsl.js
++++ b/src/webgpu/bvh_ray_functions.wgsl.js
+@@ -52,8 +52,6 @@ export const intersectsTriangle = wgslFn( /* wgsl */ `
+ export const intersectTriangles = wgslFn( /* wgsl */ `
+ 
+ 	fn intersectTriangles(
+-		bvh_position: ptr<storage, array<vec3f>, read>,
+-		bvh_index: ptr<storage, array<vec3u>, read>,
+ 		offset: u32,
+ 		count: u32,
+ 		ray: Ray
+@@ -66,10 +64,10 @@ export const intersectTriangles = wgslFn( /* wgsl */ `
+ 
+ 		for ( var i = offset; i < offset + count; i = i + 1u ) {
+ 
+-			let indices = bvh_index[ i ];
+-			let a = bvh_position[ indices.x ];
+-			let b = bvh_position[ indices.y ];
+-			let c = bvh_position[ indices.z ];
++			let indices = bvh_index.value[ i ];
++			let a = bvh_position.value[ indices.x ];
++			let b = bvh_position.value[ indices.y ];
++			let c = bvh_position.value[ indices.z ];
+ 
+ 			var triResult = intersectsTriangle( ray, a, b, c );
+ 
+@@ -91,13 +89,10 @@ export const intersectTriangles = wgslFn( /* wgsl */ `
+ export const bvhIntersectFirstHit = wgslFn( /* wgsl */ `
+ 
+ 	fn bvhIntersectFirstHit(
+-		bvh_index: ptr<storage, array<vec3u>, read>,
+-		bvh_position: ptr<storage, array<vec3f>, read>,
+-		bvh: ptr<storage, array<BVHNode>,read>,
+-		ray: Ray,
++		ray: Ray
+ 	) -> IntersectionResult {
+ 
+-		var ptr = 0;
++		var pointer = 0;
+ 		var stack: array<u32, BVH_STACK_DEPTH>;
+ 		stack[ 0 ] = 0u;
+ 
+@@ -108,16 +103,16 @@ export const bvhIntersectFirstHit = wgslFn( /* wgsl */ `
+ 
+ 		loop {
+ 
+-			if ( ptr < 0 || ptr >= i32( BVH_STACK_DEPTH ) ) {
++			if ( pointer < 0 || pointer >= i32( BVH_STACK_DEPTH ) ) {
+ 
+ 				break;
+ 
+ 			}
+ 
+-			let currNodeIndex = stack[ ptr ];
+-			let node = bvh[ currNodeIndex ];
++			let currNodeIndex = stack[ pointer ];
++			let node = bvh.value[ currNodeIndex ];
+ 
+-			ptr = ptr - 1;
++			pointer = pointer - 1;
+ 
+ 			var boundsHitDistance: f32 = 0.0;
+ 
+@@ -138,8 +133,7 @@ export const bvhIntersectFirstHit = wgslFn( /* wgsl */ `
+ 				let offset = boundsInfoy;
+ 
+ 				let localHit = intersectTriangles(
+-					bvh_position, bvh_index, offset,
+-					count, ray
++					offset, count, ray
+ 				);
+ 
+ 				if ( localHit.didHit && localHit.dist < bestHit.dist ) {
+@@ -158,11 +152,11 @@ export const bvhIntersectFirstHit = wgslFn( /* wgsl */ `
+ 				let c1 = select( rightIndex, leftIndex, leftToRight );
+ 				let c2 = select( leftIndex, rightIndex, leftToRight );
+ 
+-				ptr = ptr + 1;
+-				stack[ ptr ] = c2;
++				pointer = pointer + 1;
++				stack[ pointer ] = c2;
+ 
+-				ptr = ptr + 1;
+-				stack[ ptr ] = c1;
++				pointer = pointer + 1;
++				stack[ pointer ] = c1;
+ 
+ 			}
+ 
+diff --git a/src/webgpu/common_functions.wgsl.js b/src/webgpu/common_functions.wgsl.js
+index 5138e85..26db57a 100644
+--- a/src/webgpu/common_functions.wgsl.js
++++ b/src/webgpu/common_functions.wgsl.js
+@@ -45,13 +45,12 @@ export const getVertexAttribute = wgslFn( /* wgsl */`
+ 
+ 	fn getVertexAttribute(
+ 		barycoord: vec3f,
+-		indices: vec3u,
+-		attributeBuffer: ptr<storage, array<vec3f>, read>
++		indices: vec3u
+ 	) -> vec3f {
+ 
+-		let n0 = attributeBuffer[ indices.x ];
+-		let n1 = attributeBuffer[ indices.y ];
+-		let n2 = attributeBuffer[ indices.z ];
++		let n0 = bvh_attribute.value[ indices.x ];
++		let n1 = bvh_attribute.value[ indices.y ];
++		let n2 = bvh_attribute.value[ indices.z ];
+ 		return barycoord.x * n0 + barycoord.y * n1 + barycoord.z * n2;
+ 
+ 	}
+diff --git a/src/webgpu/distance_functions.wgsl.js b/src/webgpu/distance_functions.wgsl.js
+index a1ed230..41bb4b5 100644
+--- a/src/webgpu/distance_functions.wgsl.js
++++ b/src/webgpu/distance_functions.wgsl.js
+@@ -74,9 +74,6 @@ export const closestPointToTriangle = wgslFn( /* wgsl */ `
+ export const distanceToTriangles = wgslFn( /* wgsl */ `
+ 	fn distanceToTriangles(
+ 		// geometry info and triangle range
+-		bvh_index: ptr<storage, array<vec3u>, read>,
+-		bvh_position: ptr<storage, array<vec3f>, read>,
+-
+ 		offset: u32, count: u32,
+ 
+ 		// point and current result. Cut off range is taken from the struct
+@@ -86,10 +83,10 @@ export const distanceToTriangles = wgslFn( /* wgsl */ `
+ 
+ 		for ( var i = offset; i < offset + count; i = i + 1u ) {
+ 
+-			let indices = bvh_index[ i ];
+-			let a = bvh_position[ indices.x ];
+-			let b = bvh_position[ indices.y ];
+-			let c = bvh_position[ indices.z ];
++			let indices = bvh_index.value[ i ];
++			let a = bvh_position.value[ indices.x ];
++			let b = bvh_position.value[ indices.y ];
++			let c = bvh_position.value[ indices.z ];
+ 
+ 			// get the closest point and barycoord
+ 			let pointRes = closestPointToTriangle( point, a, b, c );
+@@ -125,11 +122,10 @@ export const distanceSqToBounds = wgslFn( /* wgsl */ `
+ export const distanceSqToBVHNodeBoundsPoint = wgslFn( /* wgsl */ `
+ 	fn distanceSqToBVHNodeBoundsPoint(
+ 		point: vec3f,
+-		bvh: ptr<storage, array<BVHNode>, read>,
+ 		currNodeIndex: u32,
+ 	) -> f32 {
+ 
+-		let node = bvh[ currNodeIndex ];
++		let node = bvh.value[ currNodeIndex ];
+ 		let minBounds = vec3f(node.bounds.min[0], node.bounds.min[1], node.bounds.min[2]);
+ 		let maxBounds = vec3f(node.bounds.max[0], node.bounds.max[1], node.bounds.max[2]);
+ 		return distanceSqToBounds( point, minBounds, maxBounds );
+@@ -139,10 +135,6 @@ export const distanceSqToBVHNodeBoundsPoint = wgslFn( /* wgsl */ `
+ 
+ export const closestPointToPoint = wgslFn( /* wgsl */ `
+ 	fn bvhClosestPointToPoint(
+-		bvh_index: ptr<storage, array<vec3u>, read>,
+-		bvh_position: ptr<storage, array<vec3f>, read>,
+-		bvh: ptr<storage, array<BVHNode>, read>,
+-
+ 		point: vec3f,
+ 		maxDistance: f32
+ 	) -> ClosestPointToPointResult {
+@@ -151,21 +143,21 @@ export const closestPointToPoint = wgslFn( /* wgsl */ `
+ 
+ 		// stack needs to be twice as long as the deepest tree we expect because
+ 		// we push both the left and right child onto the stack every traversal
+-		var ptr = 0;
++		var pointer = 0;
+ 		var stack: array<u32, BVH_STACK_DEPTH>;
+ 		stack[ 0 ] = 0u;
+ 
+ 		var res: ClosestPointToPointResult;
+ 		res.distanceSq = maxDistance * maxDistance;
+ 
+-		while ptr > - 1 && ptr < BVH_STACK_DEPTH {
++		while pointer > - 1 && pointer < BVH_STACK_DEPTH {
+ 
+-			let currNodeIndex = stack[ ptr ];
+-			let node = bvh[ currNodeIndex ];
+-			ptr = ptr - 1;
++			let currNodeIndex = stack[ pointer ];
++			let node = bvh.value[ currNodeIndex ];
++			pointer = pointer - 1;
+ 
+ 			// check if we intersect the current bounds
+-			let boundsDistance = distanceSqToBVHNodeBoundsPoint( point, bvh, currNodeIndex );
++			let boundsDistance = distanceSqToBVHNodeBoundsPoint( point, currNodeIndex );
+ 			if ( boundsDistance > res.distanceSq ) {
+ 
+ 				continue;
+@@ -181,11 +173,7 @@ export const closestPointToPoint = wgslFn( /* wgsl */ `
+ 
+ 				let count = boundsInfox & 0x0000ffffu;
+ 				let offset = boundsInfoy;
+-				distanceToTriangles(
+-					bvh_index, bvh_position,
+-					offset, count,
+-					point, &res
+-				);
++				distanceToTriangles( offset, count, point, &res );
+ 
+ 			} else {
+ 
+@@ -193,15 +181,15 @@ export const closestPointToPoint = wgslFn( /* wgsl */ `
+ 				let splitAxis = boundsInfox & 0x0000ffffu;
+ 				let rightIndex = currNodeIndex + boundsInfoy;
+ 
+-				let leftToRight = distanceSqToBVHNodeBoundsPoint( point, bvh, leftIndex ) < distanceSqToBVHNodeBoundsPoint( point, bvh, rightIndex );
++				let leftToRight = distanceSqToBVHNodeBoundsPoint( point, leftIndex ) < distanceSqToBVHNodeBoundsPoint( point, rightIndex );
+ 				let c1 = select( rightIndex, leftIndex, leftToRight );
+ 				let c2 = select( leftIndex, rightIndex, leftToRight );
+ 
+-				ptr = ptr + 1;
+-				stack[ ptr ] = c2;
++				pointer = pointer + 1;
++				stack[ pointer ] = c2;
+ 
+-				ptr = ptr + 1;
+-				stack[ ptr ] = c1;
++				pointer = pointer + 1;
++				stack[ pointer ] = c1;
+ 
+ 			}
+ 
+diff --git a/tsconfig.json b/tsconfig.json
+deleted file mode 100644
+index c635201..0000000
+--- a/tsconfig.json
++++ /dev/null
+@@ -1,15 +0,0 @@
+-{
+-  "compilerOptions": {
+-    "lib": [ "dom", "es2017" ],
+-    "module": "node20",
+-    "strict": true,
+-    "noEmit": true
+-  },
+-  "include": [
+-    "src",
+-    "test"
+-  ],
+-  "exclude": [
+-    "node_modules"
+-  ]
+-}
+diff --git a/vite.config.js b/vite.config.js
+deleted file mode 100644
+index 4b60277..0000000
+--- a/vite.config.js
++++ /dev/null
+@@ -1,27 +0,0 @@
+-import { searchForWorkspaceRoot } from 'vite';
+-import fs from 'fs';
+-
+-export default {
+-
+-	root: './example/',
+-	base: '',
+-	build: {
+-		sourcemap: true,
+-		outDir: './bundle/',
+-		rollupOptions: {
+-			input: fs
+-				.readdirSync( './example/' )
+-				.filter( p => /\.html$/.test( p ) )
+-				.map( p => `./example/${ p }` ),
+-		},
+-	},
+-	server: {
+-		fs: {
+-			allow: [
+-				// search up for workspace root
+-				searchForWorkspaceRoot( process.cwd() ),
+-			],
+-		},
+-	}
+-
+-};
+diff --git a/vitest.config.js b/vitest.config.js
+deleted file mode 100644
+index b57da98..0000000
+--- a/vitest.config.js
++++ /dev/null
+@@ -1,9 +0,0 @@
+-import { defineConfig } from 'vitest/config';
+-
+-export default defineConfig( {
+-	test: {
+-		environment: 'node',
+-		globals: true,
+-		setupFiles: [ './test/matchers/toEqualBVH.js' ],
+-	},
+-} );

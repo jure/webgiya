@@ -1,0 +1,1602 @@
+<!-- surfelization.html -->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>WebGPU Surfelization Playground (Brute Force Coverage)</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background:#0b0c10; }
+    #app { width: 100%; height: 100%; }
+    #hud {
+      position: absolute;
+      left: 10px; top: 10px;
+      padding: 8px 10px;
+      font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      color: #d7d7d7;
+      background: rgba(0,0,0,0.45);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 8px;
+      pointer-events: none;
+      white-space: pre;
+    }
+    #fallback {
+      position: absolute; inset: 0;
+      display: none;
+      place-items: center;
+      color: #fff;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      padding: 24px;
+    }
+    a { color: #9bdcff; }
+  </style>
+
+  <!-- Import map so the code can keep your original-style specifiers -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.182.0/build/three.module.js",
+      "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.182.0/build/three.webgpu.js",
+      "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.182.0/build/three.tsl.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.182.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+
+<body>
+  <div id="app"></div>
+  <div id="hud">Initializing…</div>
+  <div id="fallback"></div>
+
+  <script type="module">
+    import * as THREE from 'three/webgpu';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+    import { Inspector } from 'three/addons/inspector/Inspector.js';
+    import {
+      // --- TSL core ---
+      Fn, uniform, storage,
+      int, uint, float, vec2, vec3, vec4,
+      If, Loop,
+      min, max, abs, dot, length, clamp, smoothstep,
+      texture, getViewPosition, uv,
+      pass, output,
+
+      // --- compute/threadgroup bits ---
+      workgroupId, localId, workgroupBarrier, workgroupArray,
+      atomicAdd, atomicMax, atomicMin, atomicStore, atomicLoad,
+
+      // --- bit ops & packing ---
+      bitAnd, bitOr, bitcast, floatBitsToUint,
+
+      // --- MRT nodes ---
+      mrt, normalWorldGeometry, diffuseColor,
+      instancedArray, struct, instanceIndex, color
+    } from 'three/tsl';
+
+    // ============================================================
+    // 0) CONFIG
+    // ============================================================
+    const MODEL_URL = '../models/bunny.glb'; // <--- put bunny.glb next to this html (or change path)
+
+    // Constants aligned with src/constants.ts (real implementation)
+    const SURFEL_LIFE_RECYCLE = 0x8000000;
+    const SURFEL_LIFE_RECYCLED = SURFEL_LIFE_RECYCLE + 1;
+    const SURFEL_TTL_DEFAULT = 500;
+    const SURFEL_BASE_RADIUS = 0.24;
+    const SURFEL_RADIUS_OVERSCALE = 1.25;
+    const SURFEL_NORMAL_DIRECTION_SQUISH = 2.0;
+    const SURFEL_GRID_CELL_DIAMETER = 0.2;
+    const SURFEL_CS = 32;
+    const SURFEL_RADIUS_REF_DIST = SURFEL_GRID_CELL_DIAMETER * SURFEL_CS * 0.5;
+
+    // Workgroup tile = 8x8 pixels (matches your original mental model)
+    const TILE_X = 8;
+    const TILE_Y = 8;
+
+    // ============================================================
+    // 1) MATERIAL HELPERS
+    // ============================================================
+    function makeStandardMaterial(hex, roughness = 0.85, metalness = 0.0) {
+      const mat = new THREE.MeshStandardNodeMaterial();
+      mat.colorNode = color(hex);
+      mat.color = new THREE.Color(hex);
+      mat.roughnessNode = float(roughness);
+      mat.metalnessNode = float(metalness);
+      return mat;
+    }
+
+    // ============================================================
+    // 2) GBUFFER (Normal + Diffuse + Depth)
+    // ============================================================
+    function createGBuffer(renderer, scale) {
+      const dpr = renderer.getPixelRatio ? renderer.getPixelRatio() : window.devicePixelRatio;
+      const w = Math.max(1, Math.floor(window.innerWidth  * dpr * scale));
+      const h = Math.max(1, Math.floor(window.innerHeight * dpr * scale));
+
+      const target = new THREE.RenderTarget(w, h, {
+        count: 2,
+        type: THREE.HalfFloatType,
+        format: THREE.RGBAFormat,
+        depthBuffer: true
+      });
+
+      target.depthTexture = new THREE.DepthTexture(w, h);
+      target.textures[0].name = 'normal';
+      target.textures[1].name = 'albedo';
+
+      for (let i = 0; i < 2; i++) {
+        target.textures[i].generateMipmaps = false;
+        target.textures[i].magFilter = THREE.NearestFilter;
+        target.textures[i].minFilter = THREE.NearestFilter;
+      }
+
+      // Encode normals to 0..1 for storage
+      const sceneMRT = mrt({
+        normal: normalWorldGeometry.mul(0.5).add(0.5),
+        albedo: vec4(diffuseColor.rgb, 1.0)
+      });
+      sceneMRT.setName('gbufferMRT')
+
+      function resize(newScale) {
+        const dpr = renderer.getPixelRatio ? renderer.getPixelRatio() : window.devicePixelRatio;
+        const w = Math.max(1, Math.floor(window.innerWidth  * dpr * newScale));
+        const h = Math.max(1, Math.floor(window.innerHeight * dpr * newScale));
+        target.setSize(w, h);
+      }
+
+      return { target, sceneMRT, resize };
+    }
+
+    // ============================================================
+    // 3) HASH / RANDOM (copied + trimmed from your hashUtils.ts)
+    // ============================================================
+    const hash1 = Fn(([x_in]) => {
+      let x = uint(x_in).toVar();
+      x.addAssign(x.shiftLeft(10));
+      x.bitXorAssign(x.shiftRight(6));
+      x.addAssign(x.shiftLeft(3));
+      x.bitXorAssign(x.shiftRight(11));
+      x.addAssign(x.shiftLeft(15));
+      return x;
+    });
+
+    const hashCombine2 = Fn(([x, y]) => {
+      const M = uint(1664525);
+      const C = uint(1013904223);
+      let seed = x.mul(M).add(y).add(C).mul(M).toVar();
+      seed.bitXorAssign(seed.shiftRight(11));
+      seed.bitXorAssign(seed.shiftLeft(7).bitAnd(uint(0x9d2c5680)));
+      seed.bitXorAssign(seed.shiftLeft(15).bitAnd(uint(0xefc60000)));
+      seed.bitXorAssign(seed.shiftRight(18));
+      return seed;
+    });
+
+    const uintToU01Float = Fn(([h_in]) => {
+      let h = uint(h_in).toVar();
+      const mantissaMask = uint(0x007FFFFF);
+      const one = uint(0x3F800000);
+      h.bitAndAssign(mantissaMask);
+      h.bitOrAssign(one);
+      const r = bitcast(h, 'float');
+      return r.sub(1.0);
+    });
+
+    // ============================================================
+    // 4) SURFEL POOL (pos+normal+age + free-stack + atomics)
+    // ============================================================
+    const SurfelPacked = struct({
+      posr: 'vec4',
+      normal: 'vec3',
+      age: 'int'
+    }, 'SurfelPacked');
+
+    function createSurfelPool() {
+      let capacity = 0;
+
+      let surfelAttr = null;      // StorageBufferAttribute (itemSize 8)
+      let poolAttr = null;        // StorageInstancedBufferAttribute (int stack)
+      let touchedAtomic = null;   // StorageBufferNode (atomic int per surfel) - keepalive
+      let overAtomic = null;      // CHANGE #2: overcoverage/despawn acceleration buffer (atomic int per surfel)
+      let poolAllocAtomic = null; // StorageBufferNode (atomic int)
+      let poolMaxAtomic = null;   // StorageBufferNode (atomic int)
+
+      // Debug readback: counters only (numbers), not visualization
+      let statsAttr = null;
+      let statsStore = null;
+      let statsNode = null;
+
+      function ensureCapacity(nextCap) {
+        if (capacity === nextCap && surfelAttr) return;
+        capacity = nextCap;
+
+        // Surfel buffer: 8 floats per surfel
+        surfelAttr = new THREE.StorageBufferAttribute(new Float32Array(capacity * 8), 8);
+
+        // Free stack (pool[i] = i)
+        const poolIdx = new Int32Array(capacity);
+        for (let i = 0; i < capacity; i++) poolIdx[i] = i;
+        poolAttr = new THREE.StorageInstancedBufferAttribute(poolIdx, 1);
+        poolAttr.needsUpdate = true;
+
+        // Atomics
+        poolAllocAtomic = instancedArray(new Int32Array(1), 'int').toAtomic().setName('poolAlloc');
+        poolMaxAtomic   = instancedArray(new Int32Array(1), 'int').toAtomic().setName('poolMax');
+        touchedAtomic   = instancedArray(new Int32Array(capacity), 'int').toAtomic().setName('surfelTouched');
+
+        // CHANGE #2: overcoverage / despawn acceleration (mirrors keepalive credit, but adds to aging)
+        overAtomic      = instancedArray(new Int32Array(capacity), 'int').toAtomic().setName('surfelOver');
+
+        // Reset stats readback when buffers are recreated
+        statsAttr = null;
+        statsStore = null;
+        statsNode = null;
+      }
+
+      function getCapacity() { return capacity; }
+      function getSurfelAttr() { return surfelAttr; }
+      function getPoolAttr() { return poolAttr; }
+      function getTouchedAtomic() { return touchedAtomic; }
+      function getOverAtomic() { return overAtomic; } // CHANGE #2
+      function getPoolAllocAtomic() { return poolAllocAtomic; }
+      function getPoolMaxAtomic() { return poolMaxAtomic; }
+
+      async function readStatsAsync(renderer) {
+        if (!poolAllocAtomic || !poolMaxAtomic) return null;
+        if (!statsAttr) {
+          statsAttr = new THREE.StorageInstancedBufferAttribute(new Int32Array(2), 1);
+          statsStore = storage(statsAttr, 'int', 2);
+          statsNode = null;
+        }
+
+        if (!statsNode) {
+          statsNode = Fn(() => {
+            statsStore.element(0).assign(atomicAdd(poolAllocAtomic.element(0), int(0)));
+            statsStore.element(1).assign(atomicAdd(poolMaxAtomic.element(0), int(0)));
+          })().compute(1).setName('Surfel Pool Stats');
+        }
+
+        await renderer.compute(statsNode);
+        const ab = await renderer.getArrayBufferAsync(statsAttr);
+        return new Int32Array(ab);
+      }
+
+      return {
+        ensureCapacity,
+        getCapacity,
+        getSurfelAttr,
+        getPoolAttr,
+        getTouchedAtomic,
+        getOverAtomic, // CHANGE #2
+        getPoolAllocAtomic,
+        getPoolMaxAtomic,
+        readStatsAsync
+      };
+    }
+
+    // ============================================================
+    // 5) RESET / INIT POOL (clear surfels, reset alloc/max, clear touched/over)
+    // ============================================================
+    function createSurfelResetPass() {
+      let initNode = null;
+      let metaNode = null;
+
+      function run(renderer, pool) {
+        const cap = pool.getCapacity();
+        const surfelAttr = pool.getSurfelAttr();
+        const poolAttr = pool.getPoolAttr();
+        const poolAlloc = pool.getPoolAllocAtomic();
+        const poolMax = pool.getPoolMaxAtomic();
+        const touched = pool.getTouchedAtomic();
+        const over = pool.getOverAtomic(); // CHANGE #2
+
+        if (!surfelAttr || !poolAttr || !poolAlloc || !poolMax || !touched || !over) return;
+
+        const surfels = storage(surfelAttr, SurfelPacked, cap);
+        const poolBuf = storage(poolAttr, 'int', cap);
+
+        if (!initNode) {
+          initNode = Fn(() => {
+            const i = int(instanceIndex);
+
+            // clear surfel
+            surfels.element(i).get('posr').assign(vec4(0, 0, 0, 0));
+            surfels.element(i).get('normal').assign(vec3(0, 1, 0));
+            surfels.element(i).get('age').assign(int(SURFEL_LIFE_RECYCLED));
+
+            // refill free stack
+            poolBuf.element(i).assign(i);
+
+            // clear keepalive + overcoverage
+            atomicStore(touched.element(i), int(0));
+            atomicStore(over.element(i), int(0)); // CHANGE #2
+          })().compute(cap).setName('Surfel Reset Init');
+        }
+
+        if (!metaNode) {
+          metaNode = Fn(() => {
+            atomicStore(poolAlloc.element(0), int(0));
+            atomicStore(poolMax.element(0), int(0));
+          })().compute(1).setName('Surfel Reset Meta');
+        }
+
+        renderer.compute(initNode);
+        renderer.compute(metaNode);
+      }
+
+      return { run };
+    }
+
+    // ============================================================
+    // 6) AGE / RECYCLE PASS (TTL + keepalive credit + overcoverage acceleration)
+    // ============================================================
+    function createSurfelAgePass() {
+      let node = null;
+
+      // Uniforms (interactive)
+      const U_TTL = uniform(SURFEL_TTL_DEFAULT); // int-ish
+      const U_AGE_STEP = uniform(1);            // int-ish
+      const U_FORCE_KILL = uniform(false);      // debug toggle
+
+      function setParams({ ttl, ageStep, forceKill }) {
+        if (ttl != null) U_TTL.value = ttl;
+        if (ageStep != null) U_AGE_STEP.value = ageStep;
+        if (forceKill != null) U_FORCE_KILL.value = forceKill;
+      }
+
+      function run(renderer, pool) {
+        const cap = pool.getCapacity();
+        const surfelAttr = pool.getSurfelAttr();
+        const poolAttr = pool.getPoolAttr();
+        const poolAlloc = pool.getPoolAllocAtomic();
+        const poolMax = pool.getPoolMaxAtomic();
+        const touched = pool.getTouchedAtomic();
+        const over = pool.getOverAtomic(); // CHANGE #2
+
+        if (!surfelAttr || !poolAttr || !poolAlloc || !poolMax || !touched || !over) return;
+
+        // rebuild if capacity changes
+        if (!node || node.__cap !== cap) {
+          const surfels = storage(surfelAttr, SurfelPacked, cap);
+          const poolBuf = storage(poolAttr, 'int', cap);
+
+          node = Fn(() => {
+            const idx = int(instanceIndex);
+            const total = atomicAdd(poolMax.element(0), int(0));
+            const inRange = idx.lessThan(total);
+
+            If(inRange, () => {
+              const s = surfels.element(idx);
+              const ageNode = s.get('age');
+              let ageNow = int(ageNode).toVar();
+
+              // CHANGE #2/#3: make the "special" life states actually meaningful
+              const isRecycled = ageNow.equal(int(SURFEL_LIFE_RECYCLED));
+              const isForceRecycle = ageNow.equal(int(SURFEL_LIFE_RECYCLE));
+
+              // Only work on live (or force-recycle) surfels
+              If(isRecycled.not(), () => {
+
+                // Read AND clear keepalive + overcoverage each frame.
+                // CHANGE #3: Previously atomicMin(...,0) only reliably cleared positives and left negatives sticky.
+                const keep = atomicAdd(touched.element(idx), int(0)).toVar();
+                atomicStore(touched.element(idx), int(0));
+
+                const overc = atomicAdd(over.element(idx), int(0)).toVar();
+                atomicStore(over.element(idx), int(0));
+
+                If(U_FORCE_KILL, () => {
+                  // Force recycle immediately
+                  ageNow.assign(int(SURFEL_LIFE_RECYCLE));
+                  ageNode.assign(int(SURFEL_LIFE_RECYCLE));
+                });
+
+                // If flagged to recycle, recycle now
+                If(isForceRecycle.or(ageNow.greaterThanEqual(int(U_TTL))), () => {
+                  // mark recycled
+                  ageNode.assign(int(SURFEL_LIFE_RECYCLED));
+
+                  // push back into free stack: allocCount--, poolBuf[allocCount-1] = idx
+                  const oldAlloc = atomicAdd(poolAlloc.element(0), int(-1));
+                  const slot = oldAlloc.sub(int(1));
+
+                  If(slot.greaterThanEqual(int(0)).and(slot.lessThan(int(cap))), () => {
+                    poolBuf.element(slot).assign(idx);
+                  });
+                }).Else(() => {
+                  // normal aging: age += max(step - keep + over, 0)
+                  const step = int(U_AGE_STEP);
+                  const delta = max(int(0), step.sub(keep).add(overc));
+                  const nextAge = max(int(0), ageNow.add(delta));
+                  ageNow.assign(nextAge);
+                  ageNode.assign(nextAge);
+
+                  // recycle when age >= TTL
+                  If(ageNow.greaterThanEqual(int(U_TTL)), () => {
+                    ageNode.assign(int(SURFEL_LIFE_RECYCLED));
+
+                    const oldAlloc = atomicAdd(poolAlloc.element(0), int(-1));
+                    const slot = oldAlloc.sub(int(1));
+                    If(slot.greaterThanEqual(int(0)).and(slot.lessThan(int(cap))), () => {
+                      poolBuf.element(slot).assign(idx);
+                    });
+                  });
+                });
+              });
+            });
+          })().compute(cap).setName('Surfel Age/Recycling');
+
+          node.__cap = cap;
+        }
+
+        renderer.compute(node);
+      }
+
+      return { run, setParams, U_TTL };
+    }
+
+    // ============================================================
+    // 7) FIND MISSING (BRUTE FORCE COVERAGE, NO GRID)
+    //    + CHANGE #2: add overcoverage/despawn (matches "real" pattern: accelerate aging)
+    //    + CHANGE #3: fix distance metric + actually respect maxCheck
+    // ============================================================
+    function createSurfelFindMissingBruteForcePass() {
+      const U_FRAME = uniform(0);
+      const U_PROJ_INV = uniform(new THREE.Matrix4());
+      const U_CAM_WORLD = uniform(new THREE.Matrix4());
+      const U_CAM_POS = uniform(new THREE.Vector3());
+
+      const U_SCREEN_SIZE = uniform(new THREE.Vector2());
+      const U_GRID_STRIDE = uniform(1); // tile grid width
+
+      // Surfels & coverage tuning (interactive)
+      const U_TTL = uniform(SURFEL_TTL_DEFAULT);
+      const U_MAX_CHECK = uniform(512);              // how many surfels to iterate per pixel (brute-force cap)
+      const U_BASE_RADIUS = uniform(SURFEL_BASE_RADIUS);
+      const U_RADIUS_REF_DIST = uniform(SURFEL_RADIUS_REF_DIST);
+      const U_RADIUS_OVERSCALE = uniform(SURFEL_RADIUS_OVERSCALE);
+      const U_NORMAL_SQUISH = uniform(SURFEL_NORMAL_DIRECTION_SQUISH);
+
+      const U_COVERAGE_THRESHOLD = uniform(0.1);     // core sum threshold (matches your real defaults)
+      const U_KEEPALIVE_THRESHOLD = uniform(0.05);   // if bestSoft above => touch surfel
+      const U_KEEPALIVE_CREDIT = uniform(2);         // int credit
+
+      // CHANGE #2: overcoverage/despawn tuning (accelerate redundant surfels)
+      const U_DESPAWN_ENABLED = uniform(true);
+      const U_OVERCOV_CORE2_THRESHOLD = uniform(0.30); // if 2nd core weight is strong -> redundancy
+      const U_OVERCOV_SUM_THRESHOLD = uniform(0.90);   // if core sum is high -> redundancy
+      const U_OVERCOV_CREDIT = uniform(6);             // int acceleration added to aging
+      const U_OVERCOV_MIN_AGE = uniform(30);           // don't despawn newborns
+
+      const U_SPAWN_PROB = uniform(0.0030);           // per-tile *candidate* probability
+      const U_DEPTH_REF = uniform(10.0);              // depth scaling for probability
+
+      // Outputs (resized to tileCount; keep object identity stable where possible)
+      const tileAllocAttr = new THREE.StorageBufferAttribute(new Int32Array(2), 1);
+      const candPosAttr = new THREE.StorageBufferAttribute(new Float32Array(4), 4);
+      const candNorAttr = new THREE.StorageBufferAttribute(new Float32Array(4), 4);
+
+      let computeNode = null;
+      let lastTileCount = -1;
+      let lastSurfelAttr = null;
+      let lastDepthTex = null;
+      let lastNormalTex = null;
+
+      function ensureTileBuffers(tileCount) {
+        const needed = Math.max(1, tileCount);
+
+        // 2 ints per tile
+        if (tileAllocAttr.count < needed * 2) {
+          tileAllocAttr.array = new Int32Array(needed * 2);
+          tileAllocAttr.count = needed * 2;
+          tileAllocAttr.needsUpdate = true;
+        }
+        if (candPosAttr.count < needed) {
+          candPosAttr.array = new Float32Array(needed * 4);
+          candPosAttr.count = needed;
+          candPosAttr.needsUpdate = true;
+        }
+        if (candNorAttr.count < needed) {
+          candNorAttr.array = new Float32Array(needed * 4);
+          candNorAttr.count = needed;
+          candNorAttr.needsUpdate = true;
+        }
+      }
+
+      function setParams(p) {
+        if (p.ttl != null) U_TTL.value = p.ttl;
+        if (p.maxCheck != null) U_MAX_CHECK.value = p.maxCheck;
+        if (p.baseRadius != null) U_BASE_RADIUS.value = p.baseRadius;
+        if (p.radiusRefDist != null) U_RADIUS_REF_DIST.value = p.radiusRefDist;
+        if (p.radiusOverscale != null) U_RADIUS_OVERSCALE.value = p.radiusOverscale;
+        if (p.normalSquish != null) U_NORMAL_SQUISH.value = p.normalSquish;
+        if (p.coverageThreshold != null) U_COVERAGE_THRESHOLD.value = p.coverageThreshold;
+        if (p.keepAliveThreshold != null) U_KEEPALIVE_THRESHOLD.value = p.keepAliveThreshold;
+        if (p.keepAliveCredit != null) U_KEEPALIVE_CREDIT.value = p.keepAliveCredit;
+        if (p.spawnProb != null) U_SPAWN_PROB.value = p.spawnProb;
+        if (p.depthRef != null) U_DEPTH_REF.value = p.depthRef;
+
+        // CHANGE #2: overcoverage params
+        if (p.despawnEnabled != null) U_DESPAWN_ENABLED.value = p.despawnEnabled;
+        if (p.overSecondThreshold != null) U_OVERCOV_CORE2_THRESHOLD.value = p.overSecondThreshold;
+        if (p.overSumThreshold != null) U_OVERCOV_SUM_THRESHOLD.value = p.overSumThreshold;
+        if (p.overCredit != null) U_OVERCOV_CREDIT.value = p.overCredit;
+        if (p.overMinAge != null) U_OVERCOV_MIN_AGE.value = p.overMinAge;
+      }
+
+      function run(renderer, camera, gbuffer, pool) {
+        const surfelAttr = pool.getSurfelAttr();
+        const poolMax = pool.getPoolMaxAtomic();
+        const touched = pool.getTouchedAtomic();
+        const over = pool.getOverAtomic(); // CHANGE #2
+
+        const texDepth = gbuffer.target.depthTexture;
+        const texNormal = gbuffer.target.textures[0];
+
+        if (!surfelAttr || !poolMax || !touched || !over || !texDepth || !texNormal) return { tileCount: 0 };
+
+        const w = gbuffer.target.width;
+        const h = gbuffer.target.height;
+
+        const tileW = Math.max(1, Math.ceil(w / TILE_X));
+        const tileH = Math.max(1, Math.ceil(h / TILE_Y));
+        const tileCount = tileW * tileH;
+
+        ensureTileBuffers(tileCount);
+
+        // Update uniforms
+        U_FRAME.value = renderer.info.frame;
+        U_PROJ_INV.value.copy(camera.projectionMatrixInverse);
+        U_CAM_WORLD.value.copy(camera.matrixWorld);
+        U_CAM_POS.value.copy(camera.position);
+        U_SCREEN_SIZE.value.set(w, h);
+        U_GRID_STRIDE.value = tileW;
+
+        // Rebuild compute graph if:
+        // - tileCount changes
+        // - surfelAttr object changes (capacity reset)
+        // - depth/normal texture object changes (rare, but can happen on resize)
+        const mustRebuild =
+          (tileCount !== lastTileCount) ||
+          (surfelAttr !== lastSurfelAttr) ||
+          (texDepth !== lastDepthTex) ||
+          (texNormal !== lastNormalTex);
+
+        if (mustRebuild) {
+          computeNode = null;
+          lastTileCount = tileCount;
+          lastSurfelAttr = surfelAttr;
+          lastDepthTex = texDepth;
+          lastNormalTex = texNormal;
+        }
+
+        if (!computeNode) {
+          const cap = surfelAttr.count;
+          const surfels = storage(surfelAttr, SurfelPacked, cap);
+
+          const tileAlloc = storage(tileAllocAttr, 'int', tileAllocAttr.count);
+          const candPos = storage(candPosAttr, 'vec4', candPosAttr.count);
+          const candNor = storage(candNorAttr, 'vec4', candNorAttr.count);
+
+          // group-shared atomic to pick best lane (lowest score => most missing)
+          const computeLogic = Fn(() => {
+            const gx = workgroupId.x.toInt();
+            const gy = workgroupId.y.toInt();
+            const lx = localId.x.toInt();
+            const ly = localId.y.toInt();
+
+            const lane = ly.mul(int(TILE_X)).add(lx);
+            const tileIndex = gy.mul(int(U_GRID_STRIDE)).add(gx);
+
+            const gs_best = workgroupArray('atomic<u32>', 1);
+
+            // lane 0 initializes tile outputs + shared atomic
+            If(lane.equal(int(0)), () => {
+              const base = tileIndex.mul(int(2));
+              tileAlloc.element(base).assign(int(0));
+              tileAlloc.element(base.add(int(1))).assign(int(0));
+              candPos.element(tileIndex).assign(vec4(0,0,0,0));
+              candNor.element(tileIndex).assign(vec4(0,0,1,0));
+              atomicStore(gs_best.element(int(0)), uint(0xFFFFFFFF));
+            });
+
+            workgroupBarrier();
+
+            const widthF  = U_SCREEN_SIZE.x;
+            const heightF = U_SCREEN_SIZE.y;
+            const widthI  = int(widthF);
+            const heightI = int(heightF);
+
+            const px = gx.mul(int(TILE_X)).add(lx);
+            const py = gy.mul(int(TILE_Y)).add(ly);
+            const inBounds = px.lessThan(widthI).and(py.lessThan(heightI));
+
+            // Per-lane locals (so the winner can write them)
+            const worldPos = vec3(0).toVar();
+            const normalW  = vec3(0,1,0).toVar();
+            const coverageScore = float(1e9).toVar(); // minimize
+            const bestSidOut  = int(-1).toVar();      // for debug/info
+            const bestSoftWOut = float(0.0).toVar();
+
+            If(inBounds, () => {
+              const uv = vec2(
+                px.toFloat().add(0.5).div(widthF),
+                py.toFloat().add(0.5).div(heightF)
+              );
+
+              const depth = texture(texDepth, uv).r;
+              const valid = depth.greaterThan(1e-6).and(depth.lessThan(0.999));
+
+              If(valid, () => {
+                const viewPos = getViewPosition(uv, depth, U_PROJ_INV);
+                const worldPos4 = U_CAM_WORLD.mul(vec4(viewPos, 1.0));
+                worldPos.assign(worldPos4.xyz);
+
+                const encN = texture(texNormal, uv).xyz;
+                normalW.assign(encN.mul(2.0).sub(1.0).normalize());
+
+                // CHANGE #3: actually respect maxCheck for the brute-force scan
+                const total = atomicAdd(poolMax.element(0), int(0)).toVar();
+                const loopCount = min(min(total, int(cap)), int(U_MAX_CHECK));
+
+                // Coverage tracking
+                const softSum = float(0.0).toVar();
+                const coreSum = float(0.0).toVar();
+
+                // Keepalive: best "soft" contributor
+                const bestSoftW = float(0.0).toVar();
+                const bestSoftSid = int(-1).toVar();
+
+                // Overcoverage: top-2 core contributors (for redundancy)
+                const core1W = float(0.0).toVar();
+                const core2W = float(0.0).toVar();
+                const core1Sid = int(-1).toVar();
+                const core2Sid = int(-1).toVar();
+                const core1Age = int(0).toVar();
+                const core2Age = int(0).toVar();
+
+                Loop(loopCount, ({ i }) => {
+                  const sid = int(i);
+                  const s = surfels.element(sid);
+
+                  const age = int(s.get('age')).toVar();
+                  const alive = age.lessThan(int(U_TTL)); // only consider truly-live surfels
+
+                  If(alive, () => {
+                    const sPos = s.get('posr').xyz;
+                    const sNor = s.get('normal');
+
+                    // radius scaling with distance-to-camera (aligned with your constants)
+                    const distCam = length(sPos.sub(U_CAM_POS));
+                    const sRad = float(U_BASE_RADIUS).mul(
+                      max(float(1.0), distCam.div(float(U_RADIUS_REF_DIST)))
+                    );
+
+                    const dV = worldPos.sub(sPos);
+
+                    // CHANGE #3: fix "mahalanobis-ish" distance to a proper ellipsoidal metric
+                    // Previously: d * (1 + abs(dot(dV,n))*squish)  (dimensionally wrong and produces artifacts).
+                    const nDot = dot(dV, sNor);
+                    const nComp = abs(nDot);
+                    const tComp = length(dV.sub(sNor.mul(nDot)));
+                    const mahal = length(vec2(tComp, nComp.mul(float(U_NORMAL_SQUISH))));
+
+                    const dirW = max(float(0.0), dot(sNor, normalW));
+
+                    // Soft kernel (overscaled radius)
+                    const wSoft = smoothstep(
+                      sRad.mul(float(U_RADIUS_OVERSCALE)),
+                      float(0.0),
+                      mahal
+                    ).mul(dirW);
+
+                    // Core kernel (base radius) used for spawn/overcoverage decisions
+                    const wCore = smoothstep(
+                      sRad,
+                      float(0.0),
+                      mahal
+                    ).mul(dirW);
+
+                    softSum.addAssign(wSoft);
+                    coreSum.addAssign(wCore);
+
+                    // Track best soft surfel (keepalive)
+                    If(wSoft.greaterThan(bestSoftW), () => {
+                      bestSoftW.assign(wSoft);
+                      bestSoftSid.assign(sid);
+                    });
+
+                    // Track top-2 core surfels (overcoverage)
+                    If(wCore.greaterThan(core1W), () => {
+                      core2W.assign(core1W);
+                      core2Sid.assign(core1Sid);
+                      core2Age.assign(core1Age);
+
+                      core1W.assign(wCore);
+                      core1Sid.assign(sid);
+                      core1Age.assign(age);
+                    }).ElseIf(wCore.greaterThan(core2W), () => {
+                      core2W.assign(wCore);
+                      core2Sid.assign(sid);
+                      core2Age.assign(age);
+                    });
+                  });
+                });
+
+                // Keepalive: touch the best soft contributor for this pixel
+                If(bestSoftSid.greaterThanEqual(int(0)).and(bestSoftW.greaterThan(float(U_KEEPALIVE_THRESHOLD))), () => {
+                  atomicMax(touched.element(bestSoftSid), int(U_KEEPALIVE_CREDIT));
+                });
+
+                // CHANGE #2: Overcoverage/despawn (reference-style): accelerate redundant surfels via overAtomic[]
+                // We pick the 2nd-strongest *core* contributor, but only when the pixel is clearly overcovered.
+                If(
+                  U_DESPAWN_ENABLED
+                    .and(core2Sid.greaterThanEqual(int(0)))
+                    .and(core2W.greaterThan(float(U_OVERCOV_CORE2_THRESHOLD)))
+                    .and(coreSum.greaterThan(float(U_OVERCOV_SUM_THRESHOLD)))
+                    .and(core2Age.greaterThan(int(U_OVERCOV_MIN_AGE))),
+                  () => {
+                    atomicMax(over.element(core2Sid), int(U_OVERCOV_CREDIT));
+                  }
+                );
+
+                // Spawn gating:
+                // - coreSum below threshold => missing coverage
+                // - also avoid spawning when there are already multiple strong contributors
+                const gateCoverage = core2W.lessThan(float(0.4)).and(coreSum.lessThan(float(U_COVERAGE_THRESHOLD)));
+
+                // Per-candidate random (tile-eligible gating)
+                const seed = hashCombine2(
+                  hashCombine2(uint(px), hash1(uint(py))),
+                  uint(U_FRAME)
+                );
+                const r = uintToU01Float(seed);
+
+                // Depth-based probability (optional): more spawn in farther pixels
+                const viewDepth = viewPos.z.negate(); // positive distance
+                const depthFactor = clamp(viewDepth.div(float(U_DEPTH_REF)), 0.0, 1.0);
+                const prob = float(U_SPAWN_PROB).mul(depthFactor.max(0.05)); // keep some chance near camera
+
+                const randomOk = r.lessThan(prob);
+
+                // Score for selection: smaller softSum = more missing; else INF
+                const score = gateCoverage.and(randomOk).select(softSum, float(1e9));
+                coverageScore.assign(score);
+                bestSidOut.assign(bestSoftSid);
+                bestSoftWOut.assign(bestSoftW);
+
+                // Vote: atomicMin on packed floatbits + lane index
+                // Keep score in high bits, store lane in low 6 bits
+                const scoreBits = floatBitsToUint(score);
+                const packed = bitOr(
+                  bitAnd(scoreBits, uint(0xFFFFFFC0)),
+                  uint(lane)
+                );
+                atomicMin(gs_best.element(int(0)), packed);
+              });
+            });
+
+            workgroupBarrier();
+
+            // Winner writes spawn request + candidate position/normal
+            const bestPacked = atomicLoad(gs_best.element(int(0)));
+            If(bestPacked.notEqual(uint(0xFFFFFFFF)), () => {
+              const winningLane = bitAnd(bestPacked, uint(63)).toInt();
+
+              If(lane.equal(winningLane), () => {
+                const base = tileIndex.mul(int(2));
+                tileAlloc.element(base).assign(int(1));
+                tileAlloc.element(base.add(int(1))).assign(bestSidOut); // optional debug payload
+
+                candPos.element(tileIndex).assign(vec4(worldPos, 1.0));
+                candNor.element(tileIndex).assign(vec4(normalW, 1.0));
+              });
+            });
+          });
+
+          computeNode = computeLogic()
+            .computeKernel([TILE_X, TILE_Y, 1])
+            .setName('Find Missing (Brute Force)');
+        }
+
+        renderer.compute(computeNode, [tileW, tileH, 1]);
+        return { tileCount };
+      }
+
+      return {
+        run,
+        setParams,
+        getTileAllocAttr: () => tileAllocAttr,
+        getCandPosAttr: () => candPosAttr,
+        getCandNorAttr: () => candNorAttr
+      };
+    }
+
+    // ============================================================
+    // 8) ALLOCATE PASS (consume tileAlloc + candidate buffers)
+    // ============================================================
+    function createSurfelAllocatePass() {
+      const U_FRAME = uniform(0);
+      let node = null;
+      let lastTileCount = -1;
+      let lastCap = -1;
+
+      function run(renderer, pool, find, tileCount) {
+        if (tileCount <= 0) return;
+
+        const cap = pool.getCapacity();
+        const surfelAttr = pool.getSurfelAttr();
+        const poolAttr = pool.getPoolAttr();
+        const poolAlloc = pool.getPoolAllocAtomic();
+        const poolMax = pool.getPoolMaxAtomic();
+
+        const tileAllocAttr = find.getTileAllocAttr();
+        const candPosAttr = find.getCandPosAttr();
+        const candNorAttr = find.getCandNorAttr();
+
+        if (!surfelAttr || !poolAttr || !poolAlloc || !poolMax || !tileAllocAttr || !candPosAttr || !candNorAttr) return;
+
+        U_FRAME.value = renderer.info.frame;
+
+        // Rebuild if tileCount or cap changes (buffer counts are baked into storage() bindings)
+        if (!node || lastTileCount !== tileCount || lastCap !== cap) {
+          lastTileCount = tileCount;
+          lastCap = cap;
+
+          const surfels = storage(surfelAttr, SurfelPacked, cap);
+          const poolBuf = storage(poolAttr, 'int', cap);
+
+          const tileAlloc = storage(tileAllocAttr, 'int', tileAllocAttr.count);
+          const candPos = storage(candPosAttr, 'vec4', candPosAttr.count);
+          const candNor = storage(candNorAttr, 'vec4', candNorAttr.count);
+
+          node = Fn(() => {
+            const tile = int(instanceIndex);
+            const base = tile.mul(int(2));
+            const spawnFlag = tileAlloc.element(base);
+
+            If(spawnFlag.equal(int(1)), () => {
+              // pop from free-stack
+              const prevAlloc = atomicAdd(poolAlloc.element(0), int(1));
+              const within = prevAlloc.lessThan(int(cap));
+
+              If(within, () => {
+                const surfelIdx = poolBuf.element(prevAlloc);
+
+                // update high-water mark
+                atomicMax(poolMax.element(0), surfelIdx.add(int(1)));
+
+                // write surfel
+                const p = candPos.element(tile);
+                const n = candNor.element(tile).xyz.normalize();
+
+                const s = surfels.element(surfelIdx);
+                s.get('posr').assign(vec4(p.xyz, float(U_FRAME))); // birth frame in w
+                s.get('normal').assign(n);
+                s.get('age').assign(int(0));
+              }).Else(() => {
+                // undo alloc increment if overflow
+                atomicAdd(poolAlloc.element(0), int(-1));
+              });
+            });
+          })().compute(tileCount).setName('Surfel Allocate');
+        }
+
+        renderer.compute(node);
+      }
+
+      return { run };
+    }
+
+    // ============================================================
+    // 9) SCENE: simplified ("Bunny on a cylinder pedestal")
+    //    CHANGE #1: reduce surfaces to keep brute-force viable without a grid.
+    // ============================================================
+    async function buildScene(scene) {
+      // Lights (kept simple)
+      const hemi = new THREE.HemisphereLight(0xffffff, 0x223344, 0.45);
+      scene.add(hemi);
+
+      const dir = new THREE.DirectionalLight(0xffffff, 2.2);
+      dir.position.set(3, 6, 2);
+      dir.castShadow = false;
+      scene.add(dir);
+
+      // CHANGE #1: smaller ground plane, remove walls (major surfel reduction)
+      const floor = new THREE.Mesh(
+        new THREE.PlaneGeometry(6, 6),
+        makeStandardMaterial(0x9fa4aa, 0.98, 0.0)
+      );
+      floor.rotation.x = -Math.PI / 2;
+      floor.position.y = 0;
+      scene.add(floor);
+
+      // CHANGE #1: pedestal cylinder under the bunny (simple, compact surface)
+      const pedestalH = 0.85;
+      const pedestalR = 1.1;
+      const pedestal = new THREE.Mesh(
+        new THREE.CylinderGeometry(pedestalR, pedestalR, pedestalH, 48, 1, false),
+        makeStandardMaterial(0x6f737a, 0.9, 0.0)
+      );
+      pedestal.position.set(0, pedestalH * 0.5, 0);
+      scene.add(pedestal);
+
+      // Bunny
+      const loader = new GLTFLoader();
+      let bunnyRoot = null;
+
+      try {
+        const gltf = await loader.loadAsync(MODEL_URL);
+        bunnyRoot = gltf.scene;
+      } catch (e) {
+        console.warn('Failed to load bunny.glb. Falling back to a sphere.', e);
+        const fallback = new THREE.Mesh(
+          new THREE.SphereGeometry(0.65, 40, 28),
+          makeStandardMaterial(0xe8e3d4, 0.6, 0.0)
+        );
+        fallback.position.set(0, pedestalH + 0.65, 0);
+        scene.add(fallback);
+        return { bunny: fallback, pedestal };
+      }
+
+      // Replace materials with standard materials
+      bunnyRoot.traverse((o) => {
+        if (o && o.isMesh) {
+          o.material = makeStandardMaterial(0xe8e3d4, 0.55, 0.0);
+        }
+      });
+
+      // Normalize scale
+      const box = new THREE.Box3().setFromObject(bunnyRoot);
+      const size = new THREE.Vector3();
+      box.getSize(size);
+      const maxDim = Math.max(size.x, size.y, size.z);
+      const s = 1.35 / Math.max(1e-6, maxDim);
+      bunnyRoot.scale.setScalar(s);
+
+      // Recompute and place: center XZ, put bottom on pedestal top
+      const box2 = new THREE.Box3().setFromObject(bunnyRoot);
+      const center = new THREE.Vector3();
+      box2.getCenter(center);
+
+      bunnyRoot.position.sub(center); // center at origin
+      const box3 = new THREE.Box3().setFromObject(bunnyRoot);
+      const minY = box3.min.y;
+
+      // bottom to y=0, then lift onto pedestal
+      bunnyRoot.position.y -= minY;
+      bunnyRoot.position.y += pedestal.position.y + pedestalH * 0.5 + 0.02;
+
+      scene.add(bunnyRoot);
+
+      return { bunny: bunnyRoot, pedestal };
+    }
+
+    // ============================================================
+    // 10) SCREEN DEBUG OVERLAY (GPU, brute-force surfel lookup)
+    //     CHANGE #3: keep kernel math identical to find-pass (fix ellipsoidal distance).
+    // ============================================================
+    const DEBUG_MODES = {
+      Off: 0,
+      Surfels: 1,
+      Normals: 2,
+      Depth: 3
+    };
+    const DEBUG_MODE_LABELS = ['Off', 'Surfels', 'Normals', 'Depth'];
+
+    function createSurfelScreenDebugBruteForce() {
+      let overlayAttr = null;  // vec4 per pixel
+      let overlayStore = null;
+      let quad = null;
+      let blitMat = null;
+      let blitWidth = 0;
+      let blitHeight = 0;
+
+      let debugCompute = null;
+      let lastSurfelAttr = null;
+      let lastDepthTex = null;
+      let lastNormalTex = null;
+      let lastPixels = 0;
+
+      const U_PROJ_INV = uniform(new THREE.Matrix4());
+      const U_CAM_WORLD = uniform(new THREE.Matrix4());
+      const U_CAM_POS = uniform(new THREE.Vector3());
+      const U_TTL = uniform(SURFEL_TTL_DEFAULT);
+      const U_MAX_CHECK = uniform(512);
+      const U_BASE_RADIUS = uniform(SURFEL_BASE_RADIUS);
+      const U_RADIUS_REF_DIST = uniform(SURFEL_RADIUS_REF_DIST);
+      const U_RADIUS_OVERSCALE = uniform(SURFEL_RADIUS_OVERSCALE);
+      const U_NORMAL_SQUISH = uniform(SURFEL_NORMAL_DIRECTION_SQUISH);
+      const U_DEBUG_MODE = uniform(DEBUG_MODES.Off);
+
+      const debugParams = { mode: DEBUG_MODES.Off };
+      let show = false;
+
+      function setDebugMode(mode) {
+        debugParams.mode = mode;
+        U_DEBUG_MODE.value = mode;
+        show = mode !== DEBUG_MODES.Off;
+      }
+
+      function setParams(p) {
+        if (p.ttl != null) U_TTL.value = p.ttl;
+        if (p.maxCheck != null) U_MAX_CHECK.value = p.maxCheck;
+        if (p.baseRadius != null) U_BASE_RADIUS.value = p.baseRadius;
+        if (p.radiusRefDist != null) U_RADIUS_REF_DIST.value = p.radiusRefDist;
+        if (p.radiusOverscale != null) U_RADIUS_OVERSCALE.value = p.radiusOverscale;
+        if (p.normalSquish != null) U_NORMAL_SQUISH.value = p.normalSquish;
+      }
+
+      function ensureOverlay(width, height) {
+        const pixels = width * height;
+        const needsResize = !overlayAttr || overlayAttr.count !== pixels || blitWidth !== width || blitHeight !== height;
+        if (needsResize) {
+          overlayAttr = new THREE.StorageBufferAttribute(new Float32Array(pixels * 4), 4);
+          overlayStore = storage(overlayAttr, 'vec4', pixels);
+          debugCompute = null;
+        }
+        if (!quad || !blitMat || blitWidth !== width || blitHeight !== height) {
+          ensureBlit(width, height);
+        }
+        blitWidth = width;
+        blitHeight = height;
+      }
+
+      function ensureBlit(width, height) {
+        blitMat = new THREE.NodeMaterial();
+        blitMat.depthTest = false;
+        blitMat.depthWrite = false;
+        blitMat.transparent = true;
+        blitMat.blending = THREE.AdditiveBlending;
+
+        blitMat.colorNode = Fn(() => {
+          const Wf = float(width), Hf = float(height);
+          const x = uv().x.mul(Wf).floor();
+          const y = uv().y.mul(Hf).floor();
+          const flat = y.mul(Wf).add(x).toInt();
+          const val = overlayStore.element(flat);
+          return vec3(val.x, val.y, val.z);
+        })();
+
+        blitMat.opacityNode = Fn(() => {
+          const Wf = float(width), Hf = float(height);
+          const x = uv().x.mul(Wf).floor();
+          const y = uv().y.mul(Hf).floor();
+          const flat = y.mul(Wf).add(x).toInt();
+          return overlayStore.element(flat).w;
+        })();
+
+        quad = new THREE.QuadMesh(blitMat);
+        quad.frustumCulled = false;
+        quad.renderOrder = 9999;
+      }
+
+      function run(renderer, camera, gbuffer, pool) {
+        if (!show) return;
+
+        const texDepth = gbuffer.target.depthTexture;
+        const texNormal = gbuffer.target.textures[0];
+        if (!texDepth || !texNormal) return;
+
+        const W = gbuffer.target.width;
+        const H = gbuffer.target.height;
+        const pixels = Math.max(1, W * H);
+        ensureOverlay(W, H);
+        if (!overlayStore) return;
+
+        const surfelAttr = pool.getSurfelAttr();
+        const poolMax = pool.getPoolMaxAtomic();
+        if (!surfelAttr || !poolMax) return;
+
+        U_PROJ_INV.value.copy(camera.projectionMatrixInverse);
+        U_CAM_WORLD.value.copy(camera.matrixWorld);
+        U_CAM_POS.value.copy(camera.position);
+
+        const needRebuild =
+          !debugCompute ||
+          surfelAttr !== lastSurfelAttr ||
+          texDepth !== lastDepthTex ||
+          texNormal !== lastNormalTex ||
+          pixels !== lastPixels;
+
+        if (needRebuild) {
+          debugCompute = null;
+          lastSurfelAttr = surfelAttr;
+          lastDepthTex = texDepth;
+          lastNormalTex = texNormal;
+          lastPixels = pixels;
+        }
+
+        if (!debugCompute) {
+          const capacity = surfelAttr.count;
+          const surfels = storage(surfelAttr, SurfelPacked, capacity);
+
+          const MODE_SURFELS = int(DEBUG_MODES.Surfels);
+          const MODE_NORMALS = int(DEBUG_MODES.Normals);
+          const MODE_DEPTH = int(DEBUG_MODES.Depth);
+
+          debugCompute = Fn(() => {
+            const idx = int(instanceIndex);
+            const x = idx.mod(int(W));
+            const y = idx.div(int(W));
+            const uvCoord = vec2(
+              x.toFloat().add(0.5).div(float(W)),
+              y.toFloat().add(0.5).div(float(H))
+            );
+
+            const depth = texture(texDepth, uvCoord).r;
+            const encN = texture(texNormal, uvCoord).xyz;
+            const pixelNormal = encN.mul(2.0).sub(1.0).normalize();
+            const validDepth = depth.greaterThan(1e-6).and(depth.lessThan(0.999));
+
+            const outC = vec4(0).toVar();
+
+            If(U_DEBUG_MODE.equal(MODE_NORMALS), () => {
+              outC.assign(vec4(encN, 1.0));
+            });
+
+            If(U_DEBUG_MODE.equal(MODE_DEPTH), () => {
+              const d = depth.clamp(0.0, 1.0);
+              outC.assign(vec4(d, d, d, 1.0));
+            });
+
+            If(U_DEBUG_MODE.equal(MODE_SURFELS), () => {
+              const sumR = float(0).toVar();
+              const sumG = float(0).toVar();
+              const sumB = float(0).toVar();
+              const sumW = float(0).toVar();
+
+              If(validDepth, () => {
+                const viewPos = getViewPosition(uvCoord, depth, U_PROJ_INV);
+                const worldPos = U_CAM_WORLD.mul(vec4(viewPos, 1.0)).xyz;
+
+                const total = atomicAdd(poolMax.element(0), int(0)).toVar();
+                const loopCount = min(min(total, int(U_MAX_CHECK)), int(capacity));
+
+                Loop(loopCount, ({ i }) => {
+                  const sid = int(i);
+                  const s = surfels.element(sid);
+                  const age = s.get('age');
+                  const alive = age.lessThan(int(U_TTL));
+
+                  If(alive, () => {
+                    const sPos = s.get('posr').xyz;
+                    const sNor = s.get('normal');
+
+                    const distCam = length(sPos.sub(U_CAM_POS));
+                    const sRad = float(U_BASE_RADIUS).mul(
+                      max(float(1.0), distCam.div(float(U_RADIUS_REF_DIST)))
+                    );
+
+                    const dV = worldPos.sub(sPos);
+
+                    // CHANGE #3: same ellipsoidal distance as find-pass
+                    const nDot = dot(dV, sNor);
+                    const nComp = abs(nDot);
+                    const tComp = length(dV.sub(sNor.mul(nDot)));
+                    const mahal = length(vec2(tComp, nComp.mul(float(U_NORMAL_SQUISH))));
+
+                    const dirW = max(float(0.0), dot(sNor, pixelNormal));
+                    const w = smoothstep(
+                      sRad.mul(float(U_RADIUS_OVERSCALE)),
+                      float(0.0),
+                      mahal
+                    ).mul(dirW);
+
+                    const sidu = uint(sid);
+                    const r = uintToU01Float(hash1(sidu));
+                    const g = uintToU01Float(hash1(sidu.add(uint(1))));
+                    const b = uintToU01Float(hash1(sidu.add(uint(2))));
+
+                    sumR.addAssign(r.mul(w));
+                    sumG.addAssign(g.mul(w));
+                    sumB.addAssign(b.mul(w));
+                    sumW.addAssign(w);
+                  });
+                });
+
+                const alpha = sumW.clamp(0.0, 1.0);
+                const invW = sumW.greaterThan(float(0)).select(float(1.0).div(sumW), float(0.0));
+                outC.assign(vec4(sumR.mul(invW), sumG.mul(invW), sumB.mul(invW), alpha));
+              });
+            });
+
+            const flat = y.mul(int(W)).add(x);
+            overlayStore.element(flat).assign(outC);
+          })().compute(pixels).setName('Surfel Debug (Brute Force)');
+        }
+
+        renderer.compute(debugCompute);
+      }
+
+      function renderOverlay(renderer) {
+        if (!show || !quad || !blitMat) return;
+        const prevAutoClear = renderer.autoClear;
+        renderer.autoClear = false;
+        quad.render(renderer);
+        renderer.autoClear = prevAutoClear;
+      }
+
+      return { run, renderOverlay, setDebugMode, setParams, debugParams };
+    }
+
+    // ============================================================
+    // 11) MAIN
+    // ============================================================
+    const app = document.getElementById('app');
+    const hud = document.getElementById('hud');
+    const fallback = document.getElementById('fallback');
+
+    function showFallback(html) {
+      fallback.style.display = 'grid';
+      fallback.innerHTML = html;
+    }
+
+    // WebGPU availability check
+    if (!navigator.gpu) {
+      showFallback(`
+        <div>
+          <h2>WebGPU not available</h2>
+          <p>This demo requires a browser with WebGPU enabled.</p>
+          <p>Try a recent Chrome/Edge and ensure WebGPU is enabled.</p>
+        </div>
+      `);
+      throw new Error('WebGPU not available');
+    }
+
+    // Renderer
+    const renderer = new THREE.WebGPURenderer({
+      antialias: true,
+      forceWebGL: false,
+      requiredLimits: {
+        maxStorageBuffersPerShaderStage: 8,
+        maxComputeInvocationsPerWorkgroup: 256
+      }
+    });
+
+    renderer.inspector = new Inspector();
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.autoClear = true;
+    app.appendChild(renderer.domElement);
+
+    await renderer.init();
+
+    // Scene + Camera + Controls
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.05, 200);
+
+    // CHANGE #1: camera framing for compact scene
+    camera.position.set(3.2, 2.4, 5.0);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.target.set(0, 1.35, 0);
+    controls.update();
+
+    // Layer 0 = scene geometry (gbuffer + display)
+    camera.layers.enable(0);
+
+    // Content
+    await buildScene(scene);
+
+    // ============================================================
+    // POST PROCESSING SETUP
+    // ============================================================
+    const postProcessing = new THREE.PostProcessing(renderer);
+
+    // Create the scene pass - this handles rendering the scene
+    const scenePass = pass(scene, camera);
+
+    const sceneMRT = mrt({
+      output: output,
+    })
+    sceneMRT.setName('sceneMRT')
+    scenePass.setMRT(sceneMRT);
+
+    const scenePassColor = scenePass.getTextureNode( 'output' ).toInspector( 'Color' );
+    postProcessing.outputNode = scenePassColor;
+
+    // GUI params
+    const params = {
+      paused: false,
+
+      // GBuffer
+      gbufferScale: 0.45, // CHANGE #1: slightly smaller by default for brute-force viability
+
+      // Pool
+      capacity: 4096,     // CHANGE #1: lower default (scene is smaller now)
+
+      // Brute-force coverage (the "no grid" part)
+      maxCheck: 256,      // CHANGE #3: now actually used by find-pass; default lowered
+
+      // Coverage kernel (matches real defaults)
+      baseRadius: SURFEL_BASE_RADIUS,
+      radiusRefDist: SURFEL_RADIUS_REF_DIST,
+      radiusOverscale: SURFEL_RADIUS_OVERSCALE,
+      normalSquish: SURFEL_NORMAL_DIRECTION_SQUISH,
+
+      coverageThreshold: 0.1,
+      keepAliveThreshold: 0.05,
+      keepAliveCredit: 2,
+
+      // Spawn probability
+      spawnProb: 0.0030,
+      depthRef: 10.0,
+
+      // CHANGE #2: Overcoverage / despawn (reference-style: accelerates aging of redundant surfels)
+      despawnEnabled: true,
+      overSecondThreshold: 0.30,
+      overSumThreshold: 0.90,
+      overCredit: 6,
+      overMinAge: 30,
+
+      // Aging
+      ttl: SURFEL_TTL_DEFAULT,
+      ageStep: 1,
+      forceKill: false,
+
+      // Debug modes
+      debugMode: DEBUG_MODES.Surfels,
+
+      // Readback rate (Hz) - numbers only
+      debugHz: 10,
+
+      // Buttons
+      resetSurfels: () => {},
+    };
+
+    function createUI(renderer) {
+      if (renderer.inspector && typeof renderer.inspector.createParameters === 'function') {
+        return renderer.inspector.createParameters('Surfelization');
+      }
+      const noopController = {
+        name: () => noopController,
+        onChange: () => noopController,
+        listen: () => noopController
+      };
+      const noopFolder = {
+        add: () => noopController,
+        addFolder: () => noopFolder,
+        close: () => noopFolder
+      };
+      return noopFolder;
+    }
+
+    const gui = createUI(renderer);
+
+    // Pool + passes
+    const pool = createSurfelPool();
+    pool.ensureCapacity(params.capacity);
+
+    const resetPass = createSurfelResetPass();
+    const agePass = createSurfelAgePass();
+    const findPass = createSurfelFindMissingBruteForcePass();
+    const allocPass = createSurfelAllocatePass();
+
+    // Apply initial reset
+    resetPass.run(renderer, pool);
+
+    // GPU screen debug (no CPU readback for visualization)
+    const screenDebug = createSurfelScreenDebugBruteForce();
+    screenDebug.setDebugMode(params.debugMode);
+
+    params.resetSurfels = () => {
+      resetPass.run(renderer, pool);
+    };
+
+    // GUI wiring
+    {
+      const f = gui.addFolder('GBuffer');
+      f.add(params, 'gbufferScale', 0.15, 1.0, 0.01);
+    }
+
+    {
+      const f = gui.addFolder('Pool');
+      f.add(params, 'capacity', 512, 65536, 512).name('Max Surfels').onChange((v) => {
+        pool.ensureCapacity(v);
+        resetPass.run(renderer, pool);
+      });
+      f.add(params, 'resetSurfels').name('Reset');
+    }
+
+    {
+      const f = gui.addFolder('Coverage (Brute Force)');
+      f.add(params, 'maxCheck', 64, 4096, 64).name('Max surfels checked');
+      f.add(params, 'baseRadius', 0.02, 0.5, 0.005);
+      f.add(params, 'radiusRefDist', 0.5, 30.0, 0.1).name('Radius ref dist');
+      f.add(params, 'radiusOverscale', 0.5, 3.0, 0.01).name('Radius overscale');
+      f.add(params, 'normalSquish', 0.0, 6.0, 0.05).name('Normal squish');
+
+      f.add(params, 'coverageThreshold', 0.0, 1.0, 0.005).name('Core sum <');
+      f.add(params, 'keepAliveThreshold', 0.0, 1.0, 0.005).name('Touch if > weight');
+      f.add(params, 'keepAliveCredit', 0, 10, 1).name('Touch credit');
+    }
+
+    {
+      const f = gui.addFolder('Spawn');
+      f.add(params, 'spawnProb', 0.0, 0.05, 0.0001).name('Spawn prob');
+      f.add(params, 'depthRef', 1.0, 50.0, 0.25).name('Depth ref');
+    }
+
+    // CHANGE #2: despawn/overcoverage controls
+    {
+      const f = gui.addFolder('Overcoverage (Despawn)');
+      f.add(params, 'despawnEnabled').name('Enabled');
+      f.add(params, 'overSecondThreshold', 0.0, 1.0, 0.01).name('2nd core >');
+      f.add(params, 'overSumThreshold', 0.0, 3.0, 0.01).name('Core sum >');
+      f.add(params, 'overCredit', 0, 50, 1).name('Age accel');
+      f.add(params, 'overMinAge', 0, 500, 1).name('Min age');
+    }
+
+    {
+      const f = gui.addFolder('Aging');
+      f.add(params, 'ttl', 10, 2000, 1).name('TTL');
+      f.add(params, 'ageStep', 0, 5, 1).name('Age step');
+      f.add(params, 'forceKill').name('Force kill (debug)');
+    }
+
+    {
+      const f = gui.addFolder('Debug');
+      const debugOptions = {
+        Off: DEBUG_MODES.Off,
+        Surfels: DEBUG_MODES.Surfels,
+        Normals: DEBUG_MODES.Normals,
+        Depth: DEBUG_MODES.Depth
+      };
+
+      f.add(params, 'debugMode', debugOptions).name('Mode').onChange((v) => {
+        params.debugMode = Number(v);
+        screenDebug.setDebugMode(params.debugMode);
+      });
+      f.add(params, 'debugHz', 1, 60, 1).name('Readback Hz');
+    }
+
+    gui.add(params, 'paused');
+
+    // GBuffer (separate from PostProcessing, used only for compute passes)
+    let gbuffer = createGBuffer(renderer, params.gbufferScale);
+
+    // Readback scheduling
+    let lastReadbackMs = 0;
+    let readbackInFlight = false;
+
+    let lastAliveCount = 0;
+    let lastMaxCount = 0;
+    let lastTileCount = 0;
+
+    function applyPassParams() {
+      agePass.setParams({ ttl: params.ttl, ageStep: params.ageStep, forceKill: params.forceKill });
+
+      findPass.setParams({
+        ttl: params.ttl,
+        maxCheck: params.maxCheck,
+        baseRadius: params.baseRadius,
+        radiusRefDist: params.radiusRefDist,
+        radiusOverscale: params.radiusOverscale,
+        normalSquish: params.normalSquish,
+        coverageThreshold: params.coverageThreshold,
+        keepAliveThreshold: params.keepAliveThreshold,
+        keepAliveCredit: params.keepAliveCredit,
+        spawnProb: params.spawnProb,
+        depthRef: params.depthRef,
+
+        // CHANGE #2
+        despawnEnabled: params.despawnEnabled,
+        overSecondThreshold: params.overSecondThreshold,
+        overSumThreshold: params.overSumThreshold,
+        overCredit: params.overCredit,
+        overMinAge: params.overMinAge,
+      });
+
+      screenDebug.setParams({
+        ttl: params.ttl,
+        maxCheck: params.maxCheck,
+        baseRadius: params.baseRadius,
+        radiusRefDist: params.radiusRefDist,
+        radiusOverscale: params.radiusOverscale,
+        normalSquish: params.normalSquish
+      });
+    }
+
+    function resizeAll() {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      gbuffer.resize(params.gbufferScale);
+    }
+
+    window.addEventListener('resize', resizeAll);
+
+    // ============================================================
+    // 12) ANIMATION LOOP
+    // ============================================================
+    renderer.setAnimationLoop(() => {
+      controls.update();
+
+      // If gbufferScale changed in GUI, resize gbuffer target lazily
+      if (gbuffer.target) {
+        const dpr = renderer.getPixelRatio ? renderer.getPixelRatio() : window.devicePixelRatio;
+        const wantW = Math.max(1, Math.floor(window.innerWidth  * dpr * params.gbufferScale));
+        const wantH = Math.max(1, Math.floor(window.innerHeight * dpr * params.gbufferScale));
+        if (gbuffer.target.width !== wantW || gbuffer.target.height !== wantH) {
+          gbuffer.resize(params.gbufferScale);
+        }
+      }
+
+      applyPassParams();
+
+      if (!params.paused) {
+        // --- 1) GBUFFER PASS (offscreen, for compute passes only) ---
+        const prevTarget = renderer.getRenderTarget();
+        renderer.setMRT(gbuffer.sceneMRT);
+        renderer.setRenderTarget(gbuffer.target);
+        renderer.clear();
+
+        scene.background = null;
+        camera.layers.set(0);
+        renderer.render(scene, camera);
+
+        renderer.setRenderTarget(prevTarget);
+        renderer.setMRT(null);
+
+        // --- 2) FIND MISSING (brute force) ---
+        const { tileCount } = findPass.run(renderer, camera, gbuffer, pool);
+        lastTileCount = tileCount;
+
+        // --- 3) AGE / RECYCLE ---
+        // NOTE: overcoverage acceleration is applied via overAtomic[] from the find pass (CHANGE #2)
+        agePass.run(renderer, pool);
+
+        // --- 4) ALLOCATE ---
+        allocPass.run(renderer, pool, findPass, tileCount);
+      }
+
+      // --- 5) DISPLAY using PostProcessing ---
+      scene.background = new THREE.Color(0x10131a);
+      renderer.setRenderTarget(null);
+      renderer.clear();
+      postProcessing.render();
+
+      // --- 6) GPU debug overlay (no CPU readback for visualization) ---
+      if (params.debugMode !== DEBUG_MODES.Off) {
+        screenDebug.run(renderer, camera, gbuffer, pool);
+        screenDebug.renderOverlay(renderer);
+      }
+
+      // --- 7) CPU readback for numbers only (throttled) ---
+      const now = performance.now();
+      const intervalMs = 1000 / Math.max(1, params.debugHz);
+
+      if (!readbackInFlight && (now - lastReadbackMs) >= intervalMs) {
+        readbackInFlight = true;
+        lastReadbackMs = now;
+
+        pool.readStatsAsync(renderer).then((stats) => {
+          if (stats) {
+            lastAliveCount = stats[0];
+            lastMaxCount = stats[1];
+          }
+        }).finally(() => {
+          readbackInFlight = false;
+        });
+      }
+
+      hud.textContent =
+`WebGPU Surfelization (no grid)
+gbuffer: ${gbuffer.target.width}x${gbuffer.target.height}  (scale ${params.gbufferScale.toFixed(2)})
+tiles:   ${lastTileCount}
+debug   ${DEBUG_MODE_LABELS[params.debugMode]}
+alive    ${lastAliveCount} / ${params.capacity}  (max ${lastMaxCount})
+maxCheck ${params.maxCheck}
+radius   ${params.baseRadius.toFixed(3)}  overscale ${params.radiusOverscale.toFixed(2)}
+coverageThreshold(coreSum) ${params.coverageThreshold.toFixed(3)}
+spawnProb ${params.spawnProb.toFixed(4)}  depthRef ${params.depthRef.toFixed(1)}
+despawn ${params.despawnEnabled ? 'on' : 'off'}  core2>${params.overSecondThreshold.toFixed(2)}  sum>${params.overSumThreshold.toFixed(2)}  accel ${params.overCredit}
+ttl ${params.ttl}  ageStep ${params.ageStep}
+`;
+    });
+  </script>
+</body>
+</html>

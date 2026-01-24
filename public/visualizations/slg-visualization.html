@@ -1,0 +1,2199 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>2D ray guiding visualization</title>
+  <style>
+    :root{
+      --bg:#0f1115;
+      --panel:#141826;
+      --panel2:#10131b;
+      --text:#e8ecf3;
+      --muted:#a9b3c7;
+      --border:rgba(255,255,255,0.10);
+    }
+    html,body{margin:0;background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;}
+    .slg-embed{
+      max-width: 980px;
+      margin: 16px auto;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      overflow: hidden;
+      background: linear-gradient(180deg, var(--panel), var(--panel2));
+      box-shadow: 0 12px 30px rgba(0,0,0,0.35);
+    }
+    .slg-header{
+      display:flex;
+      align-items:flex-start;
+      justify-content:space-between;
+      gap:12px;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    .slg-title{display:flex;flex-direction:column;gap:2px;}
+    .slg-title .t{font-weight:700;font-size:14px;letter-spacing:0.2px;}
+    .slg-title .s{font-size:12px;color:var(--muted);}
+    .slg-actions{display:flex;gap:8px;flex-wrap:nowrap;justify-content:flex-end;align-items:center;}
+    button, select{
+      background: rgba(255,255,255,0.06);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--text);
+      padding: 7px 10px;
+      font-size: 12px;
+      outline: none;
+    }
+    button{cursor:pointer;transition:transform 0.05s ease, background 0.2s ease;}
+    button:hover{background: rgba(255,255,255,0.09);}
+    button:active{transform: translateY(1px);}
+    button.primary{border-color: rgba(255,204,102,0.50);}
+    button.gear{padding:7px 10px; font-size: 18px; line-height: 1;}
+
+    .slg-body{padding: 10px 12px; display:flex; flex-direction:column; gap:10px;}
+
+    /* Settings drawer (hidden by default) */
+    .settings{
+      display:none;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 10px;
+      background: rgba(0,0,0,0.18);
+    }
+    .settings.open{display:block;}
+    .settings-grid{
+      display:grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px 12px;
+      align-items:end;
+    }
+    .ctrl{display:grid;gap:4px;}
+    label{font-size:12px;color:var(--muted);user-select:none;}
+    input[type="range"]{width:100%;}
+    .row{
+      grid-column: 1 / -1;
+      display:flex;
+      gap:12px;
+      flex-wrap:wrap;
+      align-items:center;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .checkbox{display:flex;gap:8px;align-items:center;user-select:none;}
+    .checkbox input{transform: translateY(1px);}
+
+    /* Main scene canvas */
+    .scene-wrap{
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow:hidden;
+      background: rgba(0,0,0,0.22);
+      aspect-ratio: 16 / 9;
+      position: relative;
+    }
+    canvas{width:100%;height:100%;display:block;}
+    #sceneCanvas{touch-action:none;} /* mobile drag */
+
+    /* Swatches (always 3 columns) */
+    .swatches{
+      display:grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap:10px;
+    }
+    .swatch{
+      border: 1px solid rgba(255,255,255,0.18);
+      border-radius: 12px;
+      padding: 10px;
+      background: #000;
+      display:grid;
+      gap:6px;
+      min-width: 0;
+      overflow:hidden;
+    }
+    .swatch .top{
+      display:flex;
+      justify-content:space-between;
+      gap:8px;
+      font-size:12px;
+      white-space: nowrap;
+      align-items:baseline;
+    }
+    .swatch .top .left{
+      min-width:0;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      font-weight: 700;
+      letter-spacing: 0.2px;
+    }
+    .swatch .top .right{
+      flex: 0 0 auto;
+      font-variant-numeric: tabular-nums;
+      opacity: 0.95;
+    }
+    .stats{
+      font-size:12px;
+      white-space: pre-line;
+      line-height: 1.25;
+      font-variant-numeric: tabular-nums;
+      opacity: 0.96;
+    }
+
+    /* Charts */
+    .mini{
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow:hidden;
+      background: rgba(0,0,0,0.18);
+    }
+    .mini header{
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--border);
+      font-size: 12px;
+      color: var(--muted);
+      background: rgba(255,255,255,0.03);
+      display:flex;
+      justify-content:space-between;
+      gap:10px;
+      align-items:center;
+    }
+    .mini .body{height: 150px;}
+    .mini.tall .body{height: 180px;}
+    .mini.small .body{height: 120px;}
+
+    /* Collapsible chart blocks */
+    details.chartToggle{
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow:hidden;
+      background: rgba(0,0,0,0.14);
+    }
+    details.chartToggle > summary{
+      list-style:none;
+      cursor:pointer;
+      padding: 10px 10px;
+      user-select:none;
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      gap:12px;
+      background: rgba(255,255,255,0.03);
+      border-bottom: 1px solid rgba(255,255,255,0.07);
+      color: var(--muted);
+      font-size: 12px;
+    }
+    details.chartToggle[open] > summary{border-bottom: 1px solid var(--border);}
+    details.chartToggle > summary::-webkit-details-marker{display:none;}
+    .pill{
+      padding: 6px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.05);
+      color: var(--text);
+      font-size: 12px;
+      flex: 0 0 auto;
+    }
+    .chartBody{padding: 10px; display:block;}
+    .chartBox{
+      border: 1px solid rgba(255,255,255,0.10);
+      border-radius: 12px;
+      overflow:hidden;
+      background: rgba(0,0,0,0.18);
+    }
+    .chartBox .body{height: 140px;}
+    .chartBox.small .body{height: 120px;}
+    .chartBox.tall .body{height: 160px;}
+
+    .footnote{
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.35;
+      margin-top: 2px;
+    }
+
+    @media (max-width: 760px){
+      .settings-grid{grid-template-columns: 1fr;}
+      .slg-actions{justify-content:flex-start;}
+      .swatch{padding: 8px;}
+      .swatch .top{font-size: 11px;}
+      .stats{font-size: 11px;}
+    }
+  </style>
+</head>
+<body>
+  <div class="slg-embed" id="slgEmbed">
+    <div class="slg-header">
+      <div class="slg-title">
+        <div class="t">2D Ray guiding for bounced light — Cosine vs Guided</div>
+        <div class="s">
+          Rays can sample <b>sky (not sun) through the opening</b>.
+          Guiding learns from bounced light. Sun is analytic.
+        </div>
+      </div>
+      <div class="slg-actions">
+        <button id="btnRun" class="primary">Play</button>
+        <button id="btnStep">Step</button>
+        <button id="btnReset">Reset</button>
+        <button id="btnGear" class="gear" title="Settings (toggle)">⚙︎</button>
+      </div>
+    </div>
+
+    <div class="slg-body">
+      <!-- Settings drawer -->
+      <div id="settings" class="settings">
+        <div class="settings-grid">
+          <div class="ctrl">
+            <label for="modeGuided">Guided sampler</label>
+            <select id="modeGuided">
+              <option value="mixture" selected>Mixture (recommended)</option>
+              <option value="guidedOnly">Guided only</option>
+              <option value="cosineOnly">Cosine only</option>
+            </select>
+          </div>
+
+          <div class="ctrl">
+            <label for="showRays">Ray overlay</label>
+            <select id="showRays">
+              <option value="both" selected>Both</option>
+              <option value="cosine">Cosine only</option>
+              <option value="guided">Guided only</option>
+              <option value="none">None</option>
+            </select>
+          </div>
+
+          <div class="ctrl">
+            <label for="slgBins">SLG bins: <span id="slgBinsVal"></span></label>
+            <input id="slgBins" type="range" min="2" max="24" step="1" value="12" />
+          </div>
+
+          <div class="ctrl">
+            <label for="simHz">Sim speed (ticks/sec): <span id="simHzVal"></span></label>
+            <input id="simHz" type="range" min="1" max="60" step="1" value="60" />
+          </div>
+
+          <div class="ctrl">
+            <label for="samplesPerTick">Samples / tick (per method): <span id="samplesPerTickVal"></span></label>
+            <input id="samplesPerTick" type="range" min="1" max="128" step="1" value="10" />
+          </div>
+
+          <div class="ctrl">
+            <label for="pGuide">Mixture p(guide): <span id="pGuideVal"></span></label>
+            <input id="pGuide" type="range" min="0" max="0.95" step="0.01" value="0.80" />
+          </div>
+
+          <div class="ctrl">
+            <label for="learnRate">SLG learning rate: <span id="learnRateVal"></span></label>
+            <input id="learnRate" type="range" min="0" max="0.35" step="0.005" value="0.03" />
+          </div>
+
+          <div class="ctrl">
+            <label for="portalIntensity">Sun intensity (visual + bounce strength): <span id="portalIntensityVal"></span></label>
+            <input id="portalIntensity" type="range" min="1" max="40" step="0.5" value="40" />
+          </div>
+
+          <div class="ctrl">
+            <label for="portalSize">Opening width: <span id="portalSizeVal"></span></label>
+            <input id="portalSize" type="range" min="0.03" max="0.45" step="0.01" value="0.04" />
+          </div>
+
+          <div class="ctrl" style="grid-column:1/-1;">
+            <label for="sunAngleDeg">Sun direction (deg): <span id="sunAngleDegVal"></span></label>
+            <input id="sunAngleDeg" type="range" min="-175" max="-5" step="1" value="-66" />
+          </div>
+
+          <div class="row">
+            <label class="checkbox"><input id="chkLearning" type="checkbox" checked /> Enable SLG learning</label>
+            <label class="checkbox"><input id="chkAutoReset" type="checkbox" checked /> Auto-reset stats on scene change</label>
+            <button id="btnRestart" title="Reset stats, reset SLG weights, and reseed RNG">Restart</button>
+          </div>
+        </div>
+
+        <div class="footnote">
+          The yellow polygon is a clipped “sun beam” (starts at the <b>bottom corners</b> of the opening).
+          Rays that hit the opening gather <b>sky</b> radiance only (sun is excluded from sampling).
+        </div>
+      </div>
+
+      <!-- Main scene -->
+      <div class="scene-wrap">
+        <canvas id="sceneCanvas"></canvas>
+      </div>
+
+      <!-- Results (full swatch background) -->
+      <div class="swatches">
+        <div class="swatch" id="swatchTruth">
+          <div class="top"><span class="left">Ground truth</span><span class="right" id="truthRight">—</span></div>
+          <div class="stats" id="truthStats"></div>
+        </div>
+        <div class="swatch" id="swatchCos">
+          <div class="top"><span class="left">Cosine</span><span class="right" id="cosRight">—</span></div>
+          <div class="stats" id="cosStats"></div>
+        </div>
+        <div class="swatch" id="swatchGuided">
+          <div class="top"><span class="left">Guided</span><span class="right" id="guidedRight">—</span></div>
+          <div class="stats" id="guidedStats"></div>
+        </div>
+      </div>
+
+      <div class="mini small">
+        <header>
+          <span id="weightsHeaderText">SLG weights: fill=probability, white=last guided-bin, cyan=last updated-bin</span>
+        </header>
+        <div class="body"><canvas id="weightsCanvas"></canvas></div>
+      </div>
+
+      <div class="mini tall">
+        <header><span>Error |luminance − truth| vs samples (log x)</span></header>
+        <div class="body"><canvas id="errCanvas"></canvas></div>
+      </div>
+
+      <!-- Extra charts -->
+      <details class="chartToggle" id="detailsPDF">
+        <summary>
+          <span>Direction PDFs (cosine, SLG, used)</span>
+          <span class="pill" data-role="toggleLabel">Expand</span>
+        </summary>
+        <div class="chartBody">
+          <div class="chartBox small">
+            <div class="body"><canvas id="pdfCanvas"></canvas></div>
+          </div>
+        </div>
+      </details>
+
+      <details class="chartToggle" id="detailsConv">
+        <summary>
+          <span>Convergence: luminance estimate vs samples (log x)</span>
+          <span class="pill" data-role="toggleLabel">Expand</span>
+        </summary>
+        <div class="chartBody">
+          <div class="chartBox tall">
+            <div class="body"><canvas id="convCanvas"></canvas></div>
+          </div>
+        </div>
+      </details>
+
+      <details class="chartToggle" id="detailsDens">
+        <summary>
+          <span>Sample density (θ histogram): cosine vs guided</span>
+          <span class="pill" data-role="toggleLabel">Expand</span>
+        </summary>
+        <div class="chartBody">
+          <div class="chartBox small">
+            <div class="body"><canvas id="densCanvas"></canvas></div>
+          </div>
+        </div>
+      </details>
+
+      <div class="footnote">
+        We estimate incident irradiance in 2D:
+        <code>E = ∫ L(θ)·cosθ dθ</code> over <code>θ ∈ [-π/2, +π/2]</code>.
+        The opening contributes <b>sky</b> only; the <b>sun</b> is analytic and appears only via its lit surfaces (bounce).
+      </div>
+    </div>
+  </div>
+
+<script>
+(() => {
+  // ============================================================
+  // Utilities
+  // ============================================================
+  const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+  const lerp  = (a, b, t) => a + (b - a) * t;
+
+  function vec3(r=0,g=0,b=0){ return {r,g,b}; }
+  function add3(a,b){ return vec3(a.r+b.r, a.g+b.g, a.b+b.b); }
+  function mul3(a,s){ return vec3(a.r*s, a.g*s, a.b*s); }
+  function mul3c(a,b){ return vec3(a.r*b.r, a.g*b.g, a.b*b.b); }
+  function luminanceLinear(c){ return 0.2126*c.r + 0.7152*c.g + 0.0722*c.b; }
+
+  // Tone map for display (Reinhard + gamma)
+  function toDisplayRGB(c) {
+    const tm = (x) => x / (1 + x);
+    const g  = 1/2.2;
+    const r  = Math.pow(clamp(tm(Math.max(0,c.r)), 0, 1), g);
+    const gg = Math.pow(clamp(tm(Math.max(0,c.g)), 0, 1), g);
+    const b  = Math.pow(clamp(tm(Math.max(0,c.b)), 0, 1), g);
+    return `rgb(${Math.round(r*255)}, ${Math.round(gg*255)}, ${Math.round(b*255)})`;
+  }
+
+  function displayRGBComponents(c){
+    const tm = (x) => x / (1 + x);
+    const g  = 1/2.2;
+    const rr = Math.pow(clamp(tm(Math.max(0,c.r)), 0, 1), g);
+    const gg = Math.pow(clamp(tm(Math.max(0,c.g)), 0, 1), g);
+    const bb = Math.pow(clamp(tm(Math.max(0,c.b)), 0, 1), g);
+    const r = Math.round(rr*255), g8 = Math.round(gg*255), b = Math.round(bb*255);
+    return { r, g: g8, b, str: `rgb(${r}, ${g8}, ${b})` };
+  }
+
+  // WCAG relative luminance (from displayed sRGB)
+  function srgbToLinear01(c01){
+    return (c01 <= 0.04045) ? (c01 / 12.92) : Math.pow((c01 + 0.055) / 1.055, 2.4);
+  }
+  function wcagRelativeLuminanceFromRGB255(rgb){
+    const r = srgbToLinear01(rgb.r / 255);
+    const g = srgbToLinear01(rgb.g / 255);
+    const b = srgbToLinear01(rgb.b / 255);
+    return 0.2126*r + 0.7152*g + 0.0722*b;
+  }
+  function setSwatchStyle(el, bgRgb){
+    const L = wcagRelativeLuminanceFromRGB255(bgRgb);
+    const lightText = (L <= 0.55);
+    el.style.background = bgRgb.str;
+    el.style.color = lightText ? "rgba(255,255,255,0.94)" : "rgba(0,0,0,0.86)";
+    el.style.textShadow = lightText
+      ? "0 1px 2px rgba(0,0,0,0.45)"
+      : "0 1px 2px rgba(255,255,255,0.35)";
+    el.style.borderColor = lightText
+      ? "rgba(255,255,255,0.28)"
+      : "rgba(0,0,0,0.22)";
+  }
+
+  function fmt(x, digits=3){
+    if (!isFinite(x)) return "—";
+    return x.toFixed(digits);
+  }
+
+  // Seeded RNG (mulberry32)
+  function mulberry32(seed) {
+    let a = seed >>> 0;
+    return function() {
+      a |= 0;
+      a = (a + 0x6D2B79F5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (a >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  // 2D vector ops
+  function sub2(a,b){ return {x:a.x-b.x, y:a.y-b.y}; }
+  function add2(a,b){ return {x:a.x+b.x, y:a.y+b.y}; }
+  function mul2(a,s){ return {x:a.x*s, y:a.y*s}; }
+  function dot2(a,b){ return a.x*b.x + a.y*b.y; }
+  function len2(a){ return Math.hypot(a.x,a.y); }
+  function cross2(a,b){ return a.x*b.y - a.y*b.x; }
+
+  function normalize2(v){
+    const l = Math.hypot(v.x,v.y);
+    if (l < 1e-12) return {x:1,y:0};
+    return {x:v.x/l, y:v.y/l};
+  }
+
+  function rotate2(v, ang){
+    const c=Math.cos(ang), s=Math.sin(ang);
+    return {x: v.x*c - v.y*s, y: v.x*s + v.y*c};
+  }
+
+  // ============================================================
+  // Scene: thick floor/ceiling for readability; rays hit INTERIOR borders
+  // ============================================================
+  const THICK = {
+    floor: 0.035,
+    ceil:  0.035,
+    wall:  0.018,
+  };
+
+  const scene = {
+    minX: 0, maxX: 1,
+    minY: 0, maxY: 1,
+
+    innerMinX: 0, innerMaxX: 1,
+    innerMinY: 0, innerMaxY: 1,
+
+    portalStartX: 0.60,
+    portalSize: 0.04,
+
+    floorAlbedo: vec3(0.78, 0.34, 0.30),
+    leftAlbedo:  vec3(0.32, 0.45, 0.95),
+    rightAlbedo: vec3(0.30, 0.86, 0.46),
+    ceilAlbedo:  vec3(0.62, 0.62, 0.62),
+
+    segments: [],
+    surfaceSegments: [],
+  };
+
+  const light = {
+    // analytic sun (for beam + "direct to surfaces")
+    color: vec3(1.0, 0.97, 0.86),
+    intensity: 40.0,
+
+    // sampled sky (through portal only)
+    skyColor: vec3(0.55, 0.72, 1.00),
+    skyIntensity: 1.6, // will be derived from sun intensity
+
+    sunAngle: (-76 * Math.PI) / 180,
+    sunDirIn: {x:0.42, y:-0.91},
+  };
+
+  function clampSunAngleRad(a){
+    const minA = (-175 * Math.PI) / 180;
+    const maxA = ( -5 * Math.PI) / 180;
+    a = clamp(a, minA, maxA);
+    if (Math.sin(a) > -0.05) a = (-10 * Math.PI) / 180;
+    return a;
+  }
+  function updateSunDir(){
+    light.sunAngle = clampSunAngleRad(light.sunAngle);
+    light.sunDirIn = {x: Math.cos(light.sunAngle), y: Math.sin(light.sunAngle)};
+  }
+  updateSunDir();
+
+  function rebuildSegments() {
+    scene.innerMinX = scene.minX + THICK.wall;
+    scene.innerMaxX = scene.maxX - THICK.wall;
+    scene.innerMinY = scene.minY + THICK.floor;
+    scene.innerMaxY = scene.maxY - THICK.ceil;
+
+    const x0 = scene.innerMinX, x1 = scene.innerMaxX;
+    const pStart = clamp(scene.portalStartX, x0, x1 - scene.portalSize);
+    const pEnd   = clamp(pStart + scene.portalSize, x0, x1);
+    scene.portalStartX = pStart;
+
+    const yT = scene.innerMaxY;
+
+    const segs = [
+      { a:{x:scene.innerMinX,y:scene.innerMinY}, b:{x:scene.innerMaxX,y:scene.innerMinY}, type:"surface", name:"floor",   albedo: scene.floorAlbedo, normal:{x:0,y:1} },
+      { a:{x:scene.innerMinX,y:scene.innerMinY}, b:{x:scene.innerMinX,y:scene.innerMaxY}, type:"surface", name:"left",    albedo: scene.leftAlbedo,  normal:{x:1,y:0} },
+      { a:{x:scene.innerMaxX,y:scene.innerMinY}, b:{x:scene.innerMaxX,y:scene.innerMaxY}, type:"surface", name:"right",   albedo: scene.rightAlbedo, normal:{x:-1,y:0} },
+
+      { a:{x:scene.innerMinX,y:yT}, b:{x:pStart,y:yT}, type:"surface", name:"ceilingL", albedo: scene.ceilAlbedo, normal:{x:0,y:-1} },
+      { a:{x:pStart,y:yT}, b:{x:pEnd,y:yT}, type:"portal", name:"portal" },
+      { a:{x:pEnd,y:yT}, b:{x:scene.innerMaxX,y:yT}, type:"surface", name:"ceilingR", albedo: scene.ceilAlbedo, normal:{x:0,y:-1} },
+    ];
+
+    scene.segments = segs;
+    scene.surfaceSegments = segs.filter(s => s.type === "surface");
+  }
+  rebuildSegments();
+
+  // ============================================================
+  // Ray / segment intersection
+  // ============================================================
+  function raySegmentIntersect(rayO, rayD, a, b) {
+    const r = rayD;
+    const s = sub2(b,a);
+    const denom = cross2(r, s);
+    if (Math.abs(denom) < 1e-12) return null;
+    const ao = sub2(a, rayO);
+    const t = cross2(ao, s) / denom;
+    const u = cross2(ao, r) / denom;
+    if (t > 1e-5 && u >= 0 && u <= 1) return {t,u};
+    return null;
+  }
+
+  function traceRay(rayO, rayD) {
+    let bestT = Infinity;
+    let bestSeg = null;
+    let bestU = 0;
+    for (const seg of scene.segments) {
+      const hit = raySegmentIntersect(rayO, rayD, seg.a, seg.b);
+      if (hit && hit.t < bestT) {
+        bestT = hit.t;
+        bestSeg = seg;
+        bestU = hit.u;
+      }
+    }
+    if (!bestSeg || !isFinite(bestT)) {
+      return { hitPoint: add2(rayO, mul2(rayD, 10)), seg: null, u: 0 };
+    }
+    const hitPoint = add2(rayO, mul2(rayD, bestT));
+    return { hitPoint, seg: bestSeg, u: bestU };
+  }
+
+  // ============================================================
+  // Hard directional "direct sun" on surfaces (analytic)
+  // ============================================================
+  const TABLE_SAMPLES = 240;
+  function allocTables() {
+    for (const seg of scene.surfaceSegments) {
+      seg.directTable = new Float32Array(TABLE_SAMPLES * 3);
+    }
+  }
+  allocTables();
+
+  function isSunVisibleAtPoint(p, n) {
+    const dirToLight = mul2(light.sunDirIn, -1);
+    const origin = add2(p, mul2(n, 1e-4));
+    const hit = traceRay(origin, dirToLight);
+    return hit.seg && hit.seg.type === "portal";
+  }
+
+  function directIrradianceAtPoint(p, n) {
+    const wi = mul2(light.sunDirIn, -1);
+    const cosNL = Math.max(0, dot2(n, wi));
+    if (cosNL <= 0) return vec3(0,0,0);
+    if (!isSunVisibleAtPoint(p, n)) return vec3(0,0,0);
+    return mul3(light.color, light.intensity * cosNL);
+  }
+
+  function recomputeDirectTables() {
+    for (const seg of scene.surfaceSegments) {
+      const ab = sub2(seg.b, seg.a);
+      for (let i=0;i<TABLE_SAMPLES;i++) {
+        const u = i / (TABLE_SAMPLES - 1);
+        const p = add2(seg.a, mul2(ab, u));
+        const E = directIrradianceAtPoint(p, seg.normal);
+        const idx = i*3;
+        seg.directTable[idx+0] = E.r;
+        seg.directTable[idx+1] = E.g;
+        seg.directTable[idx+2] = E.b;
+      }
+    }
+  }
+
+  function lookupDirect(seg, u) {
+    if (!seg.directTable) return vec3(0,0,0);
+    const x = clamp(u, 0, 1) * (TABLE_SAMPLES - 1);
+    const i = Math.floor(x);
+    const t = x - i;
+    const i0 = i;
+    const i1 = Math.min(i+1, TABLE_SAMPLES-1);
+
+    const a0 = i0*3;
+    const a1 = i1*3;
+
+    const r = lerp(seg.directTable[a0+0], seg.directTable[a1+0], t);
+    const g = lerp(seg.directTable[a0+1], seg.directTable[a1+1], t);
+    const b = lerp(seg.directTable[a0+2], seg.directTable[a1+2], t);
+    return vec3(r,g,b);
+  }
+
+  recomputeDirectTables();
+
+  // ============================================================
+  // Sampling distributions in 2D hemisphere
+  // θ in [-pi/2, +pi/2] relative to surfel normal.
+  // ============================================================
+  const HALF_PI = Math.PI * 0.5;
+  const SLG_THETA_MIN = -HALF_PI;
+  const SLG_THETA_MAX =  HALF_PI;
+  const SLG_RANGE = SLG_THETA_MAX - SLG_THETA_MIN; // pi
+
+  function pCosTheta(theta) {
+    if (theta < -HALF_PI || theta > HALF_PI) return 0;
+    return 0.5 * Math.cos(theta); // integrates to 1
+  }
+  function sampleCosineTheta(u) {
+    const s = clamp(2*u - 1, -1, 1);
+    return Math.asin(s);
+  }
+
+  // ============================================================
+  // SLG (variable bins)
+  // ============================================================
+  const slg = {
+    bins: 12,
+    binSize: SLG_RANGE / 12,
+    weights: [],
+    prior: 0,
+    // prior: 0.02,
+    lastGuidedBin: -1,
+    lastUpdatedBin: -1,
+    frameAccum: [],
+    frameN: 0,
+  };
+
+  function updateWeightsHeader() {
+    const el = document.getElementById("weightsHeaderText");
+    if (el) el.textContent = `SLG weights (${slg.bins} bins): fill=probability, white=last guided-bin, cyan=last updated-bin`;
+  }
+
+  function setSlgBins(n) {
+    n = Math.round(Number(n));
+    n = clamp(n, 2, 64);
+    slg.bins = n;
+    slg.binSize = SLG_RANGE / slg.bins;
+    slg.weights = new Array(slg.bins).fill(1.0);
+    slg.frameAccum = new Array(slg.bins).fill(0.0);
+    slg.frameN = 0;
+    slg.lastGuidedBin = -1;
+    slg.lastUpdatedBin = -1;
+    updateWeightsHeader();
+  }
+
+  function resetSLG() {
+    slg.weights = new Array(slg.bins).fill(1.0);
+    slg.frameAccum = new Array(slg.bins).fill(0.0);
+    slg.frameN = 0;
+    slg.lastGuidedBin = -1;
+    slg.lastUpdatedBin = -1;
+  }
+
+  setSlgBins(slg.bins);
+
+  function weightsToProbabilities(weights, prior=slg.prior) {
+    const eps = 1e-10;
+    let sum = 0;
+    for (let i=0;i<weights.length;i++) sum += Math.max(weights[i], 0) + prior + eps;
+    return weights.map(w => (Math.max(w, 0) + prior + eps) / sum);
+  }
+
+  function thetaToBin(theta) {
+    const t = clamp((theta - SLG_THETA_MIN) / SLG_RANGE, 0, 0.999999);
+    return Math.floor(t * slg.bins);
+  }
+
+  function binToThetaRange(bin) {
+    const a0 = SLG_THETA_MIN + bin * slg.binSize;
+    const a1 = a0 + slg.binSize;
+    return [a0, a1];
+  }
+
+  function pSLGTheta(theta, weights) {
+    if (theta < SLG_THETA_MIN || theta > SLG_THETA_MAX) return 0;
+    const bin = thetaToBin(theta);
+    const probs = weightsToProbabilities(weights);
+    return probs[bin] * (1.0 / slg.binSize);
+  }
+
+  function sampleSLGTheta(uBin, uInBin, weights) {
+    const probs = weightsToProbabilities(weights);
+    let r = uBin;
+    let chosen = 0;
+    for (let i=0;i<slg.bins;i++) {
+      r -= probs[i];
+      if (r <= 0) { chosen = i; break; }
+    }
+    const [a0, a1] = binToThetaRange(chosen);
+    const theta = a0 + (a1 - a0) * uInBin;
+    return { theta, bin: chosen };
+  }
+
+  function slgBeginTick() {
+    slg.frameAccum.fill(0.0);
+    slg.frameN = 0;
+    slg.lastGuidedBin = -1;
+    slg.lastUpdatedBin = -1;
+  }
+
+  // function slgAccumulate(bin, contribLum) {
+  //   slg.frameAccum[bin] += contribLum;
+  //   slg.frameN += 1;
+  //   slg.lastUpdatedBin = bin;
+  // }
+
+  // function slgEndTickUpdate(learnRate) {
+  //   if (slg.frameN <= 0) return;
+  //   const eps = 1e-10;
+  //   for (let i=0;i<slg.bins;i++) {
+  //     const I_hat = slg.frameAccum[i] / slg.frameN;
+  //     slg.weights[i] = (1.0 - learnRate) * slg.weights[i] + learnRate * I_hat;
+  //     slg.weights[i] = Math.max(slg.weights[i], eps);
+  //   }
+  // }
+
+  // ============================================================
+  // Estimators + surfel (snaps to interior surface borders)
+  // ============================================================
+  const estimator = {
+    surfelPos: {x:scene.innerMinX + 0.010, y:0.50},
+    surfelNormal: {x:1, y:0},
+    surfelSurface: "left",
+    inset: 0.010,
+
+    cosine: { n:0, mean: vec3(0,0,0), hist: new Array(64).fill(0), rays: [] },
+    guided: { n:0, mean: vec3(0,0,0), hist: new Array(64).fill(0), rays: [] },
+
+    histCos: [],
+    histGuided: [],
+
+    truth: vec3(0,0,0),
+    truthLum: 0,
+
+    seed: (Date.now() >>> 0),
+    rngCos: null,
+    rngGuided: null,
+
+    maxRays: 90,
+    maxHistory: 1200,
+
+    // one-bounce scale (multiplies sun-lit surface radiance only)
+    bounceScale: 0.12,
+  };
+
+  function setSurfelOnSurface(seg, u) {
+    const ab = sub2(seg.b, seg.a);
+    const p = add2(seg.a, mul2(ab, clamp(u,0,1)));
+
+    estimator.surfelSurface = seg.name;
+    estimator.surfelNormal = seg.normal;
+
+    const inset = estimator.inset;
+    estimator.surfelPos = add2(p, mul2(seg.normal, inset));
+  }
+
+  function snapSurfelToNearestSurface(worldP) {
+    let best = null;
+    let bestDist = Infinity;
+    let bestU = 0;
+
+    for (const seg of scene.surfaceSegments) {
+      const a = seg.a, b = seg.b;
+      const ab = sub2(b,a);
+      const ap = sub2(worldP,a);
+      const denom = Math.max(dot2(ab,ab), 1e-12);
+      let u = dot2(ap,ab)/denom;
+      u = clamp(u, 0, 1);
+      const q = add2(a, mul2(ab,u));
+      const d = len2(sub2(worldP,q));
+      if (d < bestDist) {
+        bestDist = d;
+        best = seg;
+        bestU = u;
+      }
+    }
+    if (best) setSurfelOnSurface(best, bestU);
+  }
+
+  snapSurfelToNearestSurface({x:scene.innerMinX + 0.15, y:scene.innerMinY});
+
+  function reseed() {
+    estimator.seed = ((Date.now() ^ (Math.random()*1e9)) >>> 0);
+    estimator.rngCos = mulberry32(estimator.seed ^ 0xA53C9E91);
+    estimator.rngGuided = mulberry32(estimator.seed ^ 0xC3D2E1F0);
+  }
+  reseed();
+
+  function resetStats() {
+    estimator.cosine.n = 0;
+    estimator.cosine.mean = vec3(0,0,0);
+    estimator.cosine.hist.fill(0);
+    estimator.cosine.rays.length = 0;
+
+    estimator.guided.n = 0;
+    estimator.guided.mean = vec3(0,0,0);
+    estimator.guided.hist.fill(0);
+    estimator.guided.rays.length = 0;
+
+    estimator.histCos.length = 0;
+    estimator.histGuided.length = 0;
+  }
+
+  function resetAll() {
+    resetStats();
+    resetSLG();
+  }
+
+  function updateMean(state, sample) {
+    state.n += 1;
+    const invN = 1.0 / state.n;
+    state.mean.r += (sample.r - state.mean.r) * invN;
+    state.mean.g += (sample.g - state.mean.g) * invN;
+    state.mean.b += (sample.b - state.mean.b) * invN;
+  }
+
+  function bumpThetaHistogram(hist, theta) {
+    const t = (theta - SLG_THETA_MIN) / SLG_RANGE;
+    const idx = clamp(Math.floor(t * hist.length), 0, hist.length - 1);
+    hist[idx] += 1;
+  }
+
+  function recordRay(state, origin, hitPoint, hitName, method, hitRadiance) {
+    state.rays.push({ origin, hitPoint, hitName, method, hitRadiance });
+    if (state.rays.length > estimator.maxRays) state.rays.shift();
+  }
+
+  // Incident radiance at hit:
+  // - portal: returns SKY radiance only (sun is excluded from sampling)
+  // - surface: returns simple diffuse 1-bounce radiance based on analytic sun on that surface
+  function radianceAtHit(hit) {
+    if (!hit.seg) return vec3(0,0,0);
+
+    if (hit.seg.type === "portal") {
+      return mul3(light.skyColor, light.skyIntensity);
+    }
+
+    const directE = lookupDirect(hit.seg, hit.u);
+    return mul3c(hit.seg.albedo, mul3(directE, estimator.bounceScale));
+  }
+
+  // ============================================================
+  // Ground truth via numeric integration
+  // E = ∫ L(θ) cosθ dθ
+  // ============================================================
+  function recomputeTruth() {
+    const N = 2000;
+    const dTheta = SLG_RANGE / N;
+
+    let acc = vec3(0,0,0);
+    for (let i=0;i<N;i++) {
+      const theta = SLG_THETA_MIN + (i + 0.5) * dTheta;
+      const dir = rotate2(estimator.surfelNormal, theta);
+      const hit = traceRay(estimator.surfelPos, dir);
+      const L = radianceAtHit(hit);
+      const c = Math.cos(theta);
+      acc.r += L.r * c * dTheta;
+      acc.g += L.g * c * dTheta;
+      acc.b += L.b * c * dTheta;
+    }
+    estimator.truth = acc;
+    estimator.truthLum = luminanceLinear(acc);
+  }
+  recomputeTruth();
+
+  // ============================================================
+  // Sampling
+  // ============================================================
+  function sampleCosineOnce() {
+    const u = estimator.rngCos();
+    const theta = sampleCosineTheta(u);
+    const dir = rotate2(estimator.surfelNormal, theta);
+
+    const hit = traceRay(estimator.surfelPos, dir);
+    const L = radianceAtHit(hit);
+
+    const c = Math.cos(theta);
+    const p = Math.max(pCosTheta(theta), 1e-12);
+
+    const contrib = mul3(L, c / p);
+    updateMean(estimator.cosine, contrib);
+    bumpThetaHistogram(estimator.cosine.hist, theta);
+    recordRay(estimator.cosine, estimator.surfelPos, hit.hitPoint, hit.seg ? hit.seg.name : "none", "cosine", L);
+  }
+
+  function sampleGuidedOnce(params) {
+    const { strategy, pGuide, learningEnabled } = params;
+    const weightsSnapshot = slg.weights.slice();
+
+    let theta = 0;
+    let guidedBin = -1;
+    let usedBranch = "cosine";
+
+    if (strategy === "cosineOnly") {
+      theta = sampleCosineTheta(estimator.rngGuided());
+      usedBranch = "cosine";
+    } else if (strategy === "guidedOnly") {
+      const s = sampleSLGTheta(estimator.rngGuided(), estimator.rngGuided(), weightsSnapshot);
+      theta = s.theta;
+      guidedBin = s.bin;
+      usedBranch = "slg";
+    } else {
+      const u = estimator.rngGuided();
+      if (u < pGuide) {
+        const s = sampleSLGTheta(estimator.rngGuided(), estimator.rngGuided(), weightsSnapshot);
+        theta = s.theta;
+        guidedBin = s.bin;
+        usedBranch = "slg";
+      } else {
+        theta = sampleCosineTheta(estimator.rngGuided());
+        usedBranch = "cosine";
+      }
+    }
+
+    if (usedBranch === "slg") slg.lastGuidedBin = guidedBin;
+
+    const dir = rotate2(estimator.surfelNormal, theta);
+    const hit = traceRay(estimator.surfelPos, dir);
+    const L = radianceAtHit(hit);
+
+    const c = Math.cos(theta);
+
+    const pCos = pCosTheta(theta);
+    const pSlg = pSLGTheta(theta, weightsSnapshot);
+
+    let pUsed = 1.0;
+    if (strategy === "cosineOnly") pUsed = pCos;
+    else if (strategy === "guidedOnly") pUsed = pSlg;
+    else pUsed = (1 - pGuide) * pCos + pGuide * pSlg;
+
+    pUsed = Math.max(pUsed, 1e-12);
+
+    const contrib = mul3(L, c / pUsed);
+
+    updateMean(estimator.guided, contrib);
+    bumpThetaHistogram(estimator.guided.hist, theta);
+    recordRay(estimator.guided, estimator.surfelPos, hit.hitPoint, hit.seg ? hit.seg.name : "none", "guided", L);
+
+    if (learningEnabled) {
+      const bin = thetaToBin(theta);
+      const contribLum = luminanceLinear(L) * (c / pUsed);
+
+      // Update immediately with small rate
+      const learnRateNumber = Number(learnRate.value)
+      slg.weights[bin] = (1 - learnRateNumber) * slg.weights[bin] + learnRateNumber * contribLum;
+      slg.lastUpdatedBin = bin;
+
+    }
+  }
+
+  function recordHistory() {
+    const cosLum = luminanceLinear(estimator.cosine.mean);
+    const gLum = luminanceLinear(estimator.guided.mean);
+    const cosErr = Math.abs(cosLum - estimator.truthLum);
+    const gErr = Math.abs(gLum - estimator.truthLum);
+
+    estimator.histCos.push({ n: estimator.cosine.n, lum: cosLum, err: cosErr });
+    estimator.histGuided.push({ n: estimator.guided.n, lum: gLum, err: gErr });
+
+    if (estimator.histCos.length > estimator.maxHistory) estimator.histCos.shift();
+    if (estimator.histGuided.length > estimator.maxHistory) estimator.histGuided.shift();
+  }
+
+  // ============================================================
+  // UI
+  // ============================================================
+  const ui = {
+    btnRun: document.getElementById("btnRun"),
+    btnStep: document.getElementById("btnStep"),
+    btnReset: document.getElementById("btnReset"),
+    btnGear: document.getElementById("btnGear"),
+    settings: document.getElementById("settings"),
+
+    btnRestart: document.getElementById("btnRestart"),
+
+    modeGuided: document.getElementById("modeGuided"),
+    showRays: document.getElementById("showRays"),
+
+    slgBins: document.getElementById("slgBins"),
+    slgBinsVal: document.getElementById("slgBinsVal"),
+
+    simHz: document.getElementById("simHz"),
+    simHzVal: document.getElementById("simHzVal"),
+
+    samplesPerTick: document.getElementById("samplesPerTick"),
+    samplesPerTickVal: document.getElementById("samplesPerTickVal"),
+
+    pGuide: document.getElementById("pGuide"),
+    pGuideVal: document.getElementById("pGuideVal"),
+    learnRate: document.getElementById("learnRate"),
+    learnRateVal: document.getElementById("learnRateVal"),
+
+    portalIntensity: document.getElementById("portalIntensity"),
+    portalIntensityVal: document.getElementById("portalIntensityVal"),
+    portalSize: document.getElementById("portalSize"),
+    portalSizeVal: document.getElementById("portalSizeVal"),
+
+    sunAngleDeg: document.getElementById("sunAngleDeg"),
+    sunAngleDegVal: document.getElementById("sunAngleDegVal"),
+
+    chkLearning: document.getElementById("chkLearning"),
+    chkAutoReset: document.getElementById("chkAutoReset"),
+
+    swatchTruth: document.getElementById("swatchTruth"),
+    swatchCos: document.getElementById("swatchCos"),
+    swatchGuided: document.getElementById("swatchGuided"),
+
+    truthRight: document.getElementById("truthRight"),
+    cosRight: document.getElementById("cosRight"),
+    guidedRight: document.getElementById("guidedRight"),
+
+    truthStats: document.getElementById("truthStats"),
+    cosStats: document.getElementById("cosStats"),
+    guidedStats: document.getElementById("guidedStats"),
+
+    detailsPDF: document.getElementById("detailsPDF"),
+    detailsConv: document.getElementById("detailsConv"),
+    detailsDens: document.getElementById("detailsDens"),
+  };
+
+  function syncLabels() {
+    ui.slgBinsVal.textContent = `${ui.slgBins.value}`;
+    ui.simHzVal.textContent = `${ui.simHz.value}`;
+    ui.samplesPerTickVal.textContent = `${ui.samplesPerTick.value}`;
+    ui.pGuideVal.textContent = `${Number(ui.pGuide.value).toFixed(2)}`;
+    ui.learnRateVal.textContent = `${Number(ui.learnRate.value).toFixed(3)}`;
+    ui.portalIntensityVal.textContent = `${Number(ui.portalIntensity.value).toFixed(1)}`;
+    ui.portalSizeVal.textContent = `${Number(ui.portalSize.value).toFixed(2)}`;
+    ui.sunAngleDegVal.textContent = `${ui.sunAngleDeg.value}°`;
+  }
+  syncLabels();
+
+  ui.btnGear.addEventListener("click", () => {
+    ui.settings.classList.toggle("open");
+  });
+
+  function refreshDetailsLabels() {
+    for (const det of [ui.detailsPDF, ui.detailsConv, ui.detailsDens]) {
+      const pill = det.querySelector('[data-role="toggleLabel"]');
+      if (pill) pill.textContent = det.open ? "Collapse" : "Expand";
+    }
+  }
+  for (const det of [ui.detailsPDF, ui.detailsConv, ui.detailsDens]) {
+    det.addEventListener("toggle", refreshDetailsLabels);
+  }
+  refreshDetailsLabels();
+
+  let running = false; // start paused
+  ui.btnRun.addEventListener("click", () => {
+    running = !running;
+    ui.btnRun.textContent = running ? "Pause" : "Play";
+  });
+
+  ui.btnStep.addEventListener("click", () => {
+    doSamplingTick();
+  });
+
+  function applySettingsToScene() {
+    light.intensity = Number(ui.portalIntensity.value);
+    // derived sky intensity: tied to sun intensity for a stable, readable demo
+    light.skyIntensity = 0.04 * light.intensity;
+
+    estimator.bounceScale = 0.12 * (light.intensity / 18.0);
+
+    scene.portalSize = Number(ui.portalSize.value);
+
+    light.sunAngle = (Number(ui.sunAngleDeg.value) * Math.PI) / 180;
+    updateSunDir();
+
+    rebuildSegments();
+    allocTables();
+    recomputeDirectTables();
+    recomputeTruth();
+
+    if (ui.chkAutoReset.checked) resetStats();
+  }
+
+  ui.portalIntensity.addEventListener("input", () => { syncLabels(); applySettingsToScene(); });
+  ui.portalSize.addEventListener("input", () => { syncLabels(); applySettingsToScene(); });
+  ui.sunAngleDeg.addEventListener("input", () => { syncLabels(); applySettingsToScene(); });
+
+  ui.slgBins.addEventListener("input", () => {
+    syncLabels();
+    const n = Number(ui.slgBins.value);
+    setSlgBins(n);
+    if (ui.chkAutoReset.checked) resetStats();
+  });
+
+  ui.simHz.addEventListener("input", syncLabels);
+  ui.samplesPerTick.addEventListener("input", syncLabels);
+  ui.pGuide.addEventListener("input", syncLabels);
+  ui.learnRate.addEventListener("input", syncLabels);
+
+  ui.btnReset.addEventListener("click", () => {
+    running = false;
+    ui.btnRun.textContent = "Play";
+
+    ui.modeGuided.value = "mixture";
+    ui.showRays.value = "both";
+
+    ui.slgBins.value = 12;
+    setSlgBins(12);
+
+    ui.simHz.value = 60;
+    ui.samplesPerTick.value = 10;
+    ui.pGuide.value = 0.8;
+    ui.learnRate.value = 0.03;
+
+    ui.portalIntensity.value = 40;
+    ui.portalSize.value = 0.04;
+    ui.sunAngleDeg.value = -66;
+
+    ui.chkLearning.checked = true;
+    ui.chkAutoReset.checked = true;
+
+    scene.portalStartX = 0.60;
+    rebuildSegments();
+    snapSurfelToNearestSurface({x:scene.innerMinX + 0.15, y:scene.innerMinY});
+
+    applySettingsToScene();
+    resetAll();
+    syncLabels();
+  });
+
+  ui.btnRestart.addEventListener("click", () => {
+    reseed();
+    resetAll();
+  });
+
+  // ============================================================
+  // Canvases
+  // ============================================================
+  const sceneCanvas = document.getElementById("sceneCanvas");
+  const weightsCanvas = document.getElementById("weightsCanvas");
+  const errCanvas = document.getElementById("errCanvas");
+  const pdfCanvas = document.getElementById("pdfCanvas");
+  const convCanvas = document.getElementById("convCanvas");
+  const densCanvas = document.getElementById("densCanvas");
+
+  const ctxScene = sceneCanvas.getContext("2d");
+  const ctxW = weightsCanvas.getContext("2d");
+  const ctxErr = errCanvas.getContext("2d");
+  const ctxPDF = pdfCanvas.getContext("2d");
+  const ctxConv = convCanvas.getContext("2d");
+  const ctxDens = densCanvas.getContext("2d");
+
+  function resizeCanvasToDisplaySize(canvas) {
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    const w = Math.max(2, Math.floor(rect.width * dpr));
+    const h = Math.max(2, Math.floor(rect.height * dpr));
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+      return true;
+    }
+    return false;
+  }
+
+  // World-to-canvas mapping
+  const view = { minX:-0.12, maxX:1.12, minY:-0.12, maxY:1.12 };
+  function worldToCanvas(p, canvas) {
+    const w = canvas.width, h = canvas.height;
+    const x = (p.x - view.minX) / (view.maxX - view.minX) * w;
+    const y = h - (p.y - view.minY) / (view.maxY - view.minY) * h;
+    return {x,y};
+  }
+  function canvasToWorld(p, canvas) {
+    const w = canvas.width, h = canvas.height;
+    const x = view.minX + (p.x / w) * (view.maxX - view.minX);
+    const y = view.minY + ((h - p.y) / h) * (view.maxY - view.minY);
+    return {x,y};
+  }
+
+  function clearCanvas(ctx, canvas) {
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+  }
+
+  // ============================================================
+  // Interaction: surfel, opening, sun direction handle (mobile safe)
+  // ============================================================
+  const drag = { active:false, mode:"", pointerId:null, offset:{x:0,y:0}, anchor:null };
+
+  function portalBottomSegment() {
+    const pStart = scene.portalStartX;
+    const pEnd = pStart + scene.portalSize;
+    return { a:{x:pStart, y:scene.innerMaxY}, b:{x:pEnd, y:scene.innerMaxY}, c:{x:(pStart+pEnd)*0.5, y:scene.innerMaxY} };
+  }
+
+  function portalRect() {
+    const ps = portalBottomSegment();
+    return { x0: ps.a.x, x1: ps.b.x, y0: scene.innerMaxY, y1: scene.maxY };
+  }
+
+  function sunHandle() {
+    const p = portalBottomSegment();
+    const anchor = {x: p.c.x, y: scene.innerMaxY - 0.03};
+    const tip = add2(anchor, mul2(light.sunDirIn, 0.20));
+    return {anchor, tip};
+  }
+
+  function pickAtWorldPos(wp) {
+    const surfelR = 0.055;
+    const tipR = 0.070;
+
+    if (len2(sub2(wp, estimator.surfelPos)) < surfelR) return "surfel";
+
+    const pr = portalRect();
+    if (wp.x >= pr.x0 - 0.05 && wp.x <= pr.x1 + 0.05 && wp.y >= pr.y0 - 0.06 && wp.y <= pr.y1 + 0.04) {
+      return "portal";
+    }
+
+    const sh = sunHandle();
+    if (len2(sub2(wp, sh.tip)) < tipR) return "sunTip";
+
+    return "";
+  }
+
+  function pointerToCanvasPx(e, canvas) {
+    const rect = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    return { x: (e.clientX - rect.left) * dpr, y: (e.clientY - rect.top) * dpr };
+  }
+
+  sceneCanvas.addEventListener("contextmenu", (e) => e.preventDefault());
+
+  sceneCanvas.addEventListener("pointerdown", (e) => {
+    sceneCanvas.setPointerCapture(e.pointerId);
+    const cp = pointerToCanvasPx(e, sceneCanvas);
+    const wp = canvasToWorld(cp, sceneCanvas);
+
+    const pick = pickAtWorldPos(wp);
+    if (!pick) return;
+
+    drag.active = true;
+    drag.mode = pick;
+    drag.pointerId = e.pointerId;
+
+    if (pick === "portal") {
+      drag.offset = {x: scene.portalStartX - wp.x, y:0};
+    } else if (pick === "sunTip") {
+      drag.anchor = sunHandle().anchor;
+    } else {
+      drag.offset = {x:0,y:0};
+    }
+  });
+
+  sceneCanvas.addEventListener("pointermove", (e) => {
+    if (!drag.active || e.pointerId !== drag.pointerId) return;
+
+    const cp = pointerToCanvasPx(e, sceneCanvas);
+    const wp = canvasToWorld(cp, sceneCanvas);
+
+    if (drag.mode === "surfel") {
+      snapSurfelToNearestSurface(wp);
+      recomputeTruth();
+      if (ui.chkAutoReset.checked) resetStats();
+    } else if (drag.mode === "portal") {
+      scene.portalStartX = wp.x + drag.offset.x;
+      rebuildSegments();
+      allocTables();
+      recomputeDirectTables();
+      recomputeTruth();
+      if (ui.chkAutoReset.checked) resetStats();
+    } else if (drag.mode === "sunTip") {
+      const anchor = drag.anchor || sunHandle().anchor;
+      let v = sub2(wp, anchor);
+      if (len2(v) < 1e-5) return;
+
+      if (v.y > -0.05) v.y = -0.05;
+      const d = normalize2(v);
+
+      light.sunAngle = clampSunAngleRad(Math.atan2(d.y, d.x));
+      updateSunDir();
+
+      ui.sunAngleDeg.value = Math.round((light.sunAngle * 180) / Math.PI);
+      syncLabels();
+
+      recomputeDirectTables();
+      recomputeTruth();
+      if (ui.chkAutoReset.checked) resetStats();
+    }
+  });
+
+  function endDrag(e) {
+    if (drag.pointerId !== e.pointerId) return;
+    drag.active = false;
+    drag.mode = "";
+    drag.pointerId = null;
+    drag.anchor = null;
+  }
+  sceneCanvas.addEventListener("pointerup", endDrag);
+  sceneCanvas.addEventListener("pointercancel", endDrag);
+
+  // ============================================================
+  // Beam polygon (quad extended + clipped)
+  // ============================================================
+  function clipPolyToRect(poly, xmin, xmax, ymin, ymax) {
+    function clipEdge(input, inside, intersect) {
+      const out = [];
+      if (!input.length) return out;
+      for (let i=0;i<input.length;i++) {
+        const A = input[i];
+        const B = input[(i+1) % input.length];
+        const Ain = inside(A);
+        const Bin = inside(B);
+
+        if (Ain && Bin) out.push(B);
+        else if (Ain && !Bin) out.push(intersect(A,B));
+        else if (!Ain && Bin) { out.push(intersect(A,B)); out.push(B); }
+      }
+      return out;
+    }
+
+    let p = poly;
+
+    p = clipEdge(p, (q)=> q.x >= xmin, (A,B)=> {
+      const t = (xmin - A.x) / (B.x - A.x);
+      return {x:xmin, y: A.y + t*(B.y - A.y)};
+    });
+    p = clipEdge(p, (q)=> q.x <= xmax, (A,B)=> {
+      const t = (xmax - A.x) / (B.x - A.x);
+      return {x:xmax, y: A.y + t*(B.y - A.y)};
+    });
+    p = clipEdge(p, (q)=> q.y >= ymin, (A,B)=> {
+      const t = (ymin - A.y) / (B.y - A.y);
+      return {x: A.x + t*(B.x - A.x), y:ymin};
+    });
+    p = clipEdge(p, (q)=> q.y <= ymax, (A,B)=> {
+      const t = (ymax - A.y) / (B.y - A.y);
+      return {x: A.x + t*(B.x - A.x), y:ymax};
+    });
+
+    return (p.length < 3) ? [] : p;
+  }
+
+  function beamQuad() {
+    const ps = portalBottomSegment();
+    const A = {x: ps.a.x, y: ps.a.y};
+    const B = {x: ps.b.x, y: ps.b.y};
+    const far = 6.0;
+    const A2 = add2(A, mul2(light.sunDirIn, far));
+    const B2 = add2(B, mul2(light.sunDirIn, far));
+    return [A, B, B2, A2];
+  }
+
+  function computeBeamPolys() {
+    const q = beamQuad();
+    const polyRoom = clipPolyToRect(q, scene.minX, scene.maxX, scene.minY, scene.maxY);
+    const polyAir  = clipPolyToRect(q, scene.innerMinX, scene.innerMaxX, scene.innerMinY, scene.innerMaxY);
+    return { polyRoom, polyAir };
+  }
+
+  // ============================================================
+  // Drawing helpers
+  // ============================================================
+  function fillWorldRect(ctx, canvas, x0, y0, x1, y1, style) {
+    const p0 = worldToCanvas({x:x0,y:y0}, canvas);
+    const p1 = worldToCanvas({x:x1,y:y1}, canvas);
+    const left = Math.min(p0.x, p1.x);
+    const right = Math.max(p0.x, p1.x);
+    const top = Math.min(p0.y, p1.y);
+    const bottom = Math.max(p0.y, p1.y);
+    ctx.fillStyle = style;
+    ctx.fillRect(left, top, right-left, bottom-top);
+  }
+
+  function strokeWorldRect(ctx, canvas, x0, y0, x1, y1, style, lineWidthPx) {
+    const p0 = worldToCanvas({x:x0,y:y0}, canvas);
+    const p1 = worldToCanvas({x:x1,y:y1}, canvas);
+    const left = Math.min(p0.x, p1.x);
+    const right = Math.max(p0.x, p1.x);
+    const top = Math.min(p0.y, p1.y);
+    const bottom = Math.max(p0.y, p1.y);
+    ctx.strokeStyle = style;
+    ctx.lineWidth = lineWidthPx;
+    ctx.strokeRect(left, top, right-left, bottom-top);
+  }
+
+  function drawPoly(ctx, canvas, poly) {
+    if (!poly || poly.length < 3) return false;
+    ctx.beginPath();
+    for (let i=0;i<poly.length;i++){
+      const p = worldToCanvas(poly[i], canvas);
+      if (i===0) ctx.moveTo(p.x,p.y);
+      else ctx.lineTo(p.x,p.y);
+    }
+    ctx.closePath();
+    return true;
+  }
+
+  // ============================================================
+  // Main scene drawing
+  // ============================================================
+  function drawScene() {
+    resizeCanvasToDisplaySize(sceneCanvas);
+    const ctx = ctxScene;
+    const c = sceneCanvas;
+    const dpr = window.devicePixelRatio || 1;
+
+    // background
+    ctx.fillStyle = "rgba(0,0,0,0.22)";
+    ctx.fillRect(0,0,c.width,c.height);
+
+    // interior cavity
+    fillWorldRect(ctx, c, scene.innerMinX, scene.innerMinY, scene.innerMaxX, scene.innerMaxY, "rgba(0,0,0,0.18)");
+
+    // base surface colors
+    const ambient = 0.20;
+    const floorBase = toDisplayRGB(mul3(scene.floorAlbedo, ambient));
+    const leftBase  = toDisplayRGB(mul3(scene.leftAlbedo,  ambient));
+    const rightBase = toDisplayRGB(mul3(scene.rightAlbedo, ambient));
+    const ceilBase  = toDisplayRGB(mul3(scene.ceilAlbedo,  ambient));
+
+    fillWorldRect(ctx, c, scene.minX, scene.minY, scene.maxX, scene.innerMinY, floorBase);
+
+    const pr = portalRect();
+    fillWorldRect(ctx, c, scene.minX, scene.innerMaxY, pr.x0, scene.maxY, ceilBase);
+    fillWorldRect(ctx, c, pr.x1, scene.innerMaxY, scene.maxX, scene.maxY, ceilBase);
+
+    fillWorldRect(ctx, c, scene.minX, scene.innerMinY, scene.innerMinX, scene.innerMaxY, leftBase);
+    fillWorldRect(ctx, c, scene.innerMaxX, scene.innerMinY, scene.maxX, scene.innerMaxY, rightBase);
+
+    // Opening appearance: sky only (sampled)
+    const skyL = mul3(light.skyColor, light.skyIntensity * 1.2);
+    const openingColor = toDisplayRGB(skyL);
+    fillWorldRect(ctx, c, pr.x0, pr.y0, pr.x1, pr.y1, openingColor);
+    strokeWorldRect(ctx, c, pr.x0, pr.y0, pr.x1, pr.y1, "rgba(255,255,255,0.30)", 2*dpr);
+
+    // interior boundary & room outline
+    strokeWorldRect(ctx, c, scene.innerMinX, scene.innerMinY, scene.innerMaxX, scene.innerMaxY, "rgba(255,255,255,0.18)", 1.5*dpr);
+    strokeWorldRect(ctx, c, scene.minX, scene.minY, scene.maxX, scene.maxY, "rgba(255,255,255,0.10)", 1*dpr);
+
+    // Beam polygon
+    const { polyRoom, polyAir } = computeBeamPolys();
+    const beamA = clamp(0.10 + light.intensity * 0.007, 0.12, 0.36);
+    const beamSurfaceA = clamp(beamA * 1.20, 0.14, 0.44);
+
+    if (polyAir.length) {
+      ctx.save();
+      ctx.globalCompositeOperation = "lighter";
+      if (drawPoly(ctx, c, polyAir)) {
+        ctx.fillStyle = `rgba(255, 204, 102, ${beamA})`;
+        ctx.fill();
+        ctx.setLineDash([6*dpr, 6*dpr]);
+        ctx.lineWidth = 2*dpr;
+        ctx.strokeStyle = `rgba(255, 204, 102, ${clamp(beamA*1.1, 0.18, 0.55)})`;
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      ctx.restore();
+    }
+
+    // Clip beam onto each surface band (no rectangles)
+    function clipFillBand(x0,y0,x1,y1){
+      if (!polyRoom.length) return;
+      ctx.save();
+      const A = worldToCanvas({x:x0, y:y0}, c);
+      const B = worldToCanvas({x:x1, y:y1}, c);
+      const left = Math.min(A.x, B.x), right = Math.max(A.x, B.x);
+      const top  = Math.min(A.y, B.y), bottom= Math.max(A.y, B.y);
+      ctx.beginPath(); ctx.rect(left, top, right-left, bottom-top); ctx.clip();
+      ctx.globalCompositeOperation = "lighter";
+      if (drawPoly(ctx, c, polyRoom)) {
+        ctx.fillStyle = `rgba(255, 204, 102, ${beamSurfaceA})`;
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+    clipFillBand(scene.minX, scene.minY, scene.maxX, scene.innerMinY); // floor
+    clipFillBand(scene.minX, scene.innerMinY, scene.innerMinX, scene.innerMaxY); // left wall
+    clipFillBand(scene.innerMaxX, scene.innerMinY, scene.maxX, scene.innerMaxY); // right wall
+
+    // Sun handle: brighter/white (with dark outline for visibility)
+    const sh = sunHandle();
+    const SA = worldToCanvas(sh.anchor, c);
+    const ST = worldToCanvas(sh.tip, c);
+
+    // outline pass
+    ctx.strokeStyle = "rgba(0,0,0,0.45)";
+    ctx.lineWidth = 5 * dpr;
+    ctx.beginPath(); ctx.moveTo(SA.x, SA.y); ctx.lineTo(ST.x, ST.y); ctx.stroke();
+
+    // main pass
+    ctx.strokeStyle = "rgba(255,255,255,0.92)";
+    ctx.lineWidth = 2.8 * dpr;
+    ctx.beginPath(); ctx.moveTo(SA.x, SA.y); ctx.lineTo(ST.x, ST.y); ctx.stroke();
+
+    // arrow head (outline + fill)
+    const ang = Math.atan2(ST.y - SA.y, ST.x - SA.x);
+    const head = 10 * dpr;
+
+    ctx.fillStyle = "rgba(0,0,0,0.45)";
+    ctx.beginPath();
+    ctx.moveTo(ST.x, ST.y);
+    ctx.lineTo(ST.x - head*Math.cos(ang - 0.55), ST.y - head*Math.sin(ang - 0.55));
+    ctx.lineTo(ST.x - head*Math.cos(ang + 0.55), ST.y - head*Math.sin(ang + 0.55));
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.fillStyle = "rgba(255,255,255,0.92)";
+    ctx.beginPath();
+    ctx.moveTo(ST.x, ST.y);
+    ctx.lineTo(ST.x - head*Math.cos(ang - 0.55), ST.y - head*Math.sin(ang - 0.55));
+    ctx.lineTo(ST.x - head*Math.cos(ang + 0.55), ST.y - head*Math.sin(ang + 0.55));
+    ctx.closePath();
+    ctx.fill();
+
+    // tip circle
+    ctx.beginPath();
+    ctx.arc(ST.x, ST.y, 7.5*dpr, 0, Math.PI*2);
+    ctx.fillStyle = "rgba(255,255,255,0.95)";
+    ctx.fill();
+    ctx.strokeStyle = "rgba(0,0,0,0.40)";
+    ctx.lineWidth = 2*dpr;
+    ctx.stroke();
+
+    // Rays overlay
+    const show = ui.showRays.value;
+
+    const drawRaysFor = (state, lineRGBA) => {
+      for (let i=0;i<state.rays.length;i++) {
+        const r = state.rays[i];
+        const A = worldToCanvas(r.origin, c);
+        const B = worldToCanvas(r.hitPoint, c);
+        const alpha = (i / state.rays.length) * 0.55 + 0.06;
+
+        ctx.strokeStyle = `rgba(${lineRGBA[0]}, ${lineRGBA[1]}, ${lineRGBA[2]}, ${alpha})`;
+        ctx.lineWidth = 1.4 * dpr;
+
+        ctx.beginPath();
+        ctx.moveTo(A.x, A.y);
+        ctx.lineTo(B.x, B.y);
+        ctx.stroke();
+
+        const col = r.hitRadiance || vec3(0,0,0);
+        ctx.fillStyle = toDisplayRGB(col);
+        ctx.globalAlpha = 0.85;
+        ctx.beginPath();
+        ctx.arc(B.x, B.y, 2.7*dpr, 0, Math.PI*2);
+        ctx.fill();
+        ctx.globalAlpha = 1.0;
+      }
+    };
+
+    if (show === "cosine" || show === "both") drawRaysFor(estimator.cosine, [123,220,255]);
+    if (show === "guided" || show === "both") drawRaysFor(estimator.guided, [255,140,140]);
+
+    // Surfel
+    const P = worldToCanvas(estimator.surfelPos, c);
+    ctx.fillStyle = "rgba(255,255,255,0.95)";
+    ctx.strokeStyle = "rgba(0,0,0,0.65)";
+    ctx.lineWidth = 2*dpr;
+    ctx.beginPath();
+    ctx.arc(P.x, P.y, 7*dpr, 0, Math.PI*2);
+    ctx.fill();
+    ctx.stroke();
+
+    // Normal arrow
+    const tipW = add2(estimator.surfelPos, mul2(estimator.surfelNormal, 0.14));
+    const tipC = worldToCanvas(tipW, c);
+    ctx.strokeStyle = "rgba(255,255,255,0.85)";
+    ctx.lineWidth = 2*dpr;
+    ctx.beginPath();
+    ctx.moveTo(P.x, P.y);
+    ctx.lineTo(tipC.x, tipC.y);
+    ctx.stroke();
+
+    // hemisphere hint arc
+    ctx.strokeStyle = "rgba(255,255,255,0.14)";
+    ctx.lineWidth = 2*dpr;
+    const steps = 40;
+    ctx.beginPath();
+    for (let i=0;i<=steps;i++) {
+      const t = i/steps;
+      const theta = lerp(-HALF_PI, HALF_PI, t);
+      const dir = rotate2(estimator.surfelNormal, theta);
+      const wp = add2(estimator.surfelPos, mul2(dir, 0.20));
+      const cp = worldToCanvas(wp, c);
+      if (i===0) ctx.moveTo(cp.x, cp.y);
+      else ctx.lineTo(cp.x, cp.y);
+    }
+    ctx.stroke();
+
+    // HUD left
+    ctx.fillStyle = "rgba(255,255,255,0.85)";
+    ctx.font = `${Math.round(12*dpr)}px ui-sans-serif, system-ui`;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    ctx.fillText("Drag: surfel • opening • sun direction", 12*dpr, 10*dpr);
+
+    // legend on top-right
+    const padR = 12*dpr;
+    const y0 = 10*dpr;
+    ctx.textAlign = "right";
+    ctx.fillStyle = "rgba(255,255,255,0.75)";
+    ctx.fillText("Cosine", c.width - padR, y0);
+    ctx.strokeStyle = "rgba(123,220,255,0.95)";
+    ctx.lineWidth = 2*dpr;
+    ctx.beginPath();
+    ctx.moveTo(c.width - padR - 74*dpr, y0 + 6*dpr);
+    ctx.lineTo(c.width - padR - 56*dpr, y0 + 6*dpr);
+    ctx.stroke();
+
+    ctx.fillStyle = "rgba(255,255,255,0.75)";
+    ctx.fillText("Guided", c.width - padR, y0 + 16*dpr);
+    ctx.strokeStyle = "rgba(255,140,140,0.95)";
+    ctx.lineWidth = 2*dpr;
+    ctx.beginPath();
+    ctx.moveTo(c.width - padR - 74*dpr, y0 + 22*dpr);
+    ctx.lineTo(c.width - padR - 56*dpr, y0 + 22*dpr);
+    ctx.stroke();
+
+    // "Press Play" hint
+    if (!running && estimator.cosine.n === 0 && estimator.guided.n === 0) {
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.font = `${Math.round(15*dpr)}px ui-sans-serif, system-ui`;
+      ctx.fillStyle = "rgba(255,255,255,0.75)";
+      ctx.fillText("Press Play (or Step) to start sampling", c.width*0.5, c.height*0.52);
+    }
+  }
+
+  // ============================================================
+  // Weights chart
+  // ============================================================
+  function drawWeights() {
+    resizeCanvasToDisplaySize(weightsCanvas);
+    const ctx = ctxW;
+    const c = weightsCanvas;
+    clearCanvas(ctx, c);
+
+    ctx.fillStyle = "rgba(0,0,0,0.20)";
+    ctx.fillRect(0,0,c.width,c.height);
+
+    const W = c.width, H = c.height;
+    const dpr = window.devicePixelRatio || 1;
+    const pad = 12*dpr;
+
+    const probs = weightsToProbabilities(slg.weights);
+    const maxW = Math.max(...slg.weights);
+
+    // Semicircle oriented so right = θ=-90°, left = θ=+90°
+    const cx = W*0.5;
+    const cy = H*0.46;
+    const R  = Math.min(W, H) * 0.31;
+
+    ctx.strokeStyle = "rgba(255,255,255,0.14)";
+    ctx.lineWidth = 2*dpr;
+    ctx.beginPath();
+    ctx.arc(cx, cy, R, Math.PI, 2*Math.PI, false);
+    ctx.stroke();
+
+    for (let bin=0; bin<slg.bins; bin++) {
+      const [a0,a1] = binToThetaRange(bin);
+
+      const ang0 = (1.5*Math.PI) - a0;
+      const ang1 = (1.5*Math.PI) - a1;
+
+      const alpha = clamp(probs[bin] * slg.bins * 0.95, 0.06, 0.92);
+      ctx.fillStyle = `rgba(255, 204, 102, ${alpha})`;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.arc(cx, cy, R, ang0, ang1, true);
+      ctx.closePath();
+      ctx.fill();
+
+      if (bin === slg.lastGuidedBin) {
+        ctx.strokeStyle = "rgba(255,255,255,0.85)";
+        ctx.lineWidth = 2*dpr;
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.arc(cx, cy, R, ang0, ang1, true);
+        ctx.closePath();
+        ctx.stroke();
+      }
+
+      if (bin === slg.lastUpdatedBin) {
+        ctx.strokeStyle = "rgba(123, 220, 255, 0.80)";
+        ctx.lineWidth = 2*dpr;
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.arc(cx, cy, R, ang0, ang1, true);
+        ctx.closePath();
+        ctx.stroke();
+      }
+    }
+
+    // Bars: left slot shows highest bin index
+    const barTop = H*0.58;
+    const barH = H - barTop - pad;
+    const barW = (W - 2*pad) / slg.bins;
+
+    ctx.font = `${Math.round(12*dpr)}px ui-sans-serif, system-ui`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "bottom";
+
+    for (let slot=0; slot<slg.bins; slot++) {
+      const bin = (slg.bins - 1) - slot; // FLIP
+      const x0 = pad + slot*barW + barW*0.12;
+      const x1 = pad + (slot+1)*barW - barW*0.12;
+      const wNorm = slg.weights[bin] / Math.max(maxW, 1e-9);
+      const h = wNorm * barH;
+
+      ctx.fillStyle = "rgba(123, 220, 255, 0.85)";
+      ctx.fillRect(x0, barTop + (barH - h), x1-x0, h);
+
+      if (bin === slg.lastGuidedBin) {
+        ctx.strokeStyle = "rgba(255,255,255,0.70)";
+        ctx.lineWidth = 2*dpr;
+        ctx.strokeRect(x0, barTop, x1-x0, barH);
+      } else if (bin === slg.lastUpdatedBin) {
+        ctx.strokeStyle = "rgba(123,220,255,0.70)";
+        ctx.lineWidth = 2*dpr;
+        ctx.strokeRect(x0, barTop, x1-x0, barH);
+      } else {
+        ctx.strokeStyle = "rgba(255,255,255,0.14)";
+        ctx.lineWidth = 1*dpr;
+        ctx.strokeRect(x0, barTop, x1-x0, barH);
+      }
+
+      ctx.fillStyle = "rgba(255,255,255,0.70)";
+      ctx.fillText(`${(probs[bin]*100).toFixed(0)}%`, (x0+x1)*0.5, barTop + (barH - h) - 4*dpr);
+    }
+
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    ctx.fillStyle = "rgba(255,255,255,0.65)";
+    ctx.fillText("Bars: left = θ=+90° (left), right = θ=-90° (right)", pad, pad);
+  }
+
+  // ============================================================
+  // Error plot
+  // ============================================================
+  function drawError() {
+    resizeCanvasToDisplaySize(errCanvas);
+    const ctx = ctxErr;
+    const c = errCanvas;
+    clearCanvas(ctx, c);
+
+    ctx.fillStyle = "rgba(0,0,0,0.20)";
+    ctx.fillRect(0,0,c.width,c.height);
+
+    const W = c.width, H = c.height;
+    const dpr = window.devicePixelRatio || 1;
+    const pad = 16*dpr;
+    const innerW = W - 2*pad;
+    const innerH = H - 2*pad;
+
+    const histA = estimator.histCos;
+    const histB = estimator.histGuided;
+
+    const maxN = Math.max(
+      (histA.length ? histA[histA.length-1].n : 1),
+      (histB.length ? histB[histB.length-1].n : 1),
+      1
+    );
+
+    const xMin = 0;
+    const xMax = Math.log10(1 + maxN);
+
+    let yMax = 1e-6;
+    for (const p of histA) yMax = Math.max(yMax, p.err);
+    for (const p of histB) yMax = Math.max(yMax, p.err);
+    yMax *= 1.15;
+
+    function X(n) {
+      const x = Math.log10(1 + Math.max(n, 0));
+      return pad + (x - xMin) / Math.max(xMax - xMin, 1e-9) * innerW;
+    }
+    function Y(v) {
+      return pad + (1 - (v / Math.max(yMax, 1e-9))) * innerH;
+    }
+
+    ctx.strokeStyle = "rgba(255,255,255,0.15)";
+    ctx.lineWidth = 1*dpr;
+    ctx.beginPath();
+    ctx.moveTo(pad, pad);
+    ctx.lineTo(pad, H-pad);
+    ctx.lineTo(W-pad, H-pad);
+    ctx.stroke();
+
+    function plot(hist, strokeStyle) {
+      if (hist.length < 2) return;
+      ctx.strokeStyle = strokeStyle;
+      ctx.lineWidth = 2*dpr;
+      ctx.beginPath();
+      for (let i=0;i<hist.length;i++) {
+        const p = hist[i];
+        const x = X(p.n);
+        const y = Y(p.err);
+        if (i===0) ctx.moveTo(x,y);
+        else ctx.lineTo(x,y);
+      }
+      ctx.stroke();
+    }
+
+    plot(histA, "rgba(123, 220, 255, 0.95)");
+    plot(histB, "rgba(255, 140, 140, 0.90)");
+
+    ctx.font = `${Math.round(12*dpr)}px ui-sans-serif, system-ui`;
+    ctx.fillStyle = "rgba(255,255,255,0.75)";
+    ctx.fillText("cosine", pad, pad - 6*dpr);
+    ctx.fillStyle = "rgba(123, 220, 255, 0.95)";
+    ctx.fillRect(pad + 52*dpr, pad - 18*dpr, 12*dpr, 12*dpr);
+
+    ctx.fillStyle = "rgba(255,255,255,0.75)";
+    ctx.fillText("guided", pad + 82*dpr, pad - 6*dpr);
+    ctx.fillStyle = "rgba(255, 140, 140, 0.90)";
+    ctx.fillRect(pad + 130*dpr, pad - 18*dpr, 12*dpr, 12*dpr);
+
+    ctx.fillStyle = "rgba(255,255,255,0.55)";
+    ctx.fillText("x: log10(1 + samples)", pad, H - 4*dpr);
+  }
+
+  // ============================================================
+  // Optional charts (PDF / convergence / density)
+  // ============================================================
+  function drawPDFsIfVisible() {
+    if (!ui.detailsPDF.open) return;
+
+    resizeCanvasToDisplaySize(pdfCanvas);
+    const ctx = ctxPDF;
+    const c = pdfCanvas;
+    clearCanvas(ctx, c);
+
+    ctx.fillStyle = "rgba(0,0,0,0.20)";
+    ctx.fillRect(0,0,c.width,c.height);
+
+    const W = c.width, H = c.height;
+    const dpr = window.devicePixelRatio || 1;
+    const pad = 14*dpr;
+
+    const strategy = ui.modeGuided.value;
+    const pGuide = Number(ui.pGuide.value);
+    const weightsSnapshot = slg.weights.slice();
+
+    const samples = 220;
+    const vals = [];
+    let ymax = 0;
+
+    for (let i=0;i<samples;i++) {
+      const t = i/(samples-1);
+      const theta = lerp(SLG_THETA_MIN, SLG_THETA_MAX, t);
+      const pc = pCosTheta(theta);
+      const ps = pSLGTheta(theta, weightsSnapshot);
+
+      let pu = 0;
+      if (strategy === "cosineOnly") pu = pc;
+      else if (strategy === "guidedOnly") pu = ps;
+      else pu = (1 - pGuide) * pc + pGuide * ps;
+
+      ymax = Math.max(ymax, pc, ps, pu);
+      vals.push({pc, ps, pu});
+    }
+
+    ctx.strokeStyle = "rgba(255,255,255,0.15)";
+    ctx.lineWidth = 1*dpr;
+    ctx.beginPath();
+    ctx.moveTo(pad, H-pad);
+    ctx.lineTo(W-pad, H-pad);
+    ctx.stroke();
+
+    function plot(getY, strokeStyle) {
+      ctx.strokeStyle = strokeStyle;
+      ctx.lineWidth = 2*dpr;
+      ctx.beginPath();
+      for (let i=0;i<vals.length;i++) {
+        const t = i/(vals.length-1);
+        const x = lerp(pad, W-pad, t);
+        const yv = getY(vals[i]);
+        const y = lerp(H-pad, pad, yv / Math.max(ymax, 1e-9));
+        if (i===0) ctx.moveTo(x,y);
+        else ctx.lineTo(x,y);
+      }
+      ctx.stroke();
+    }
+
+    plot(v => v.pc, "rgba(123, 220, 255, 0.95)");
+    plot(v => v.ps, "rgba(255, 204, 102, 0.90)");
+    plot(v => v.pu, "rgba(255, 140, 140, 0.90)");
+
+    ctx.font = `${Math.round(12*dpr)}px ui-sans-serif, system-ui`;
+    ctx.fillStyle = "rgba(255,255,255,0.75)";
+    ctx.fillText("cosine", pad, pad);
+    ctx.fillStyle = "rgba(123, 220, 255, 0.95)";
+    ctx.fillRect(pad + 54*dpr, pad - 10*dpr, 12*dpr, 12*dpr);
+
+    ctx.fillStyle = "rgba(255,255,255,0.75)";
+    ctx.fillText("SLG", pad + 84*dpr, pad);
+    ctx.fillStyle = "rgba(255, 204, 102, 0.90)";
+    ctx.fillRect(pad + 112*dpr, pad - 10*dpr, 12*dpr, 12*dpr);
+
+    ctx.fillStyle = "rgba(255,255,255,0.75)";
+    ctx.fillText("used p(θ)", pad + 144*dpr, pad);
+    ctx.fillStyle = "rgba(255, 140, 140, 0.90)";
+    ctx.fillRect(pad + 206*dpr, pad - 10*dpr, 12*dpr, 12*dpr);
+  }
+
+  function drawConvergenceIfVisible() {
+    if (!ui.detailsConv.open) return;
+
+    resizeCanvasToDisplaySize(convCanvas);
+    const ctx = ctxConv;
+    const c = convCanvas;
+    clearCanvas(ctx, c);
+
+    ctx.fillStyle = "rgba(0,0,0,0.20)";
+    ctx.fillRect(0,0,c.width,c.height);
+
+    const W = c.width, H = c.height;
+    const dpr = window.devicePixelRatio || 1;
+    const pad = 16*dpr;
+    const innerW = W - 2*pad;
+    const innerH = H - 2*pad;
+
+    const histA = estimator.histCos;
+    const histB = estimator.histGuided;
+    const truthY = estimator.truthLum;
+
+    const maxN = Math.max(
+      (histA.length ? histA[histA.length-1].n : 1),
+      (histB.length ? histB[histB.length-1].n : 1),
+      1
+    );
+    const xMin = 0;
+    const xMax = Math.log10(1 + maxN);
+
+    let yMin = truthY, yMax = truthY;
+    for (const p of histA) { yMin = Math.min(yMin, p.lum); yMax = Math.max(yMax, p.lum); }
+    for (const p of histB) { yMin = Math.min(yMin, p.lum); yMax = Math.max(yMax, p.lum); }
+    const margin = (yMax - yMin) * 0.12 + 1e-6;
+    yMin -= margin;
+    yMax += margin;
+
+    function X(n) {
+      const x = Math.log10(1 + Math.max(n, 0));
+      return pad + (x - xMin) / Math.max(xMax - xMin, 1e-9) * innerW;
+    }
+    function Y(v) {
+      return pad + (1 - (v - yMin) / Math.max(yMax - yMin, 1e-9)) * innerH;
+    }
+
+    ctx.strokeStyle = "rgba(255,255,255,0.15)";
+    ctx.lineWidth = 1*dpr;
+    ctx.beginPath();
+    ctx.moveTo(pad, pad);
+    ctx.lineTo(pad, H-pad);
+    ctx.lineTo(W-pad, H-pad);
+    ctx.stroke();
+
+    ctx.strokeStyle = "rgba(255,255,255,0.22)";
+    ctx.setLineDash([6*dpr,4*dpr]);
+    ctx.beginPath();
+    ctx.moveTo(pad, Y(truthY));
+    ctx.lineTo(W-pad, Y(truthY));
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    function plot(hist, strokeStyle) {
+      if (hist.length < 2) return;
+      ctx.strokeStyle = strokeStyle;
+      ctx.lineWidth = 2*dpr;
+      ctx.beginPath();
+      for (let i=0;i<hist.length;i++) {
+        const p = hist[i];
+        const x = X(p.n);
+        const y = Y(p.lum);
+        if (i===0) ctx.moveTo(x,y);
+        else ctx.lineTo(x,y);
+      }
+      ctx.stroke();
+    }
+
+    plot(histA, "rgba(123, 220, 255, 0.95)");
+    plot(histB, "rgba(255, 140, 140, 0.90)");
+
+    ctx.font = `${Math.round(12*dpr)}px ui-sans-serif, system-ui`;
+    ctx.fillStyle = "rgba(255,255,255,0.55)";
+    ctx.fillText("x: log10(1 + samples)", pad, H - 4*dpr);
+  }
+
+  function drawDensityIfVisible() {
+    if (!ui.detailsDens.open) return;
+
+    resizeCanvasToDisplaySize(densCanvas);
+    const ctx = ctxDens;
+    const c = densCanvas;
+    clearCanvas(ctx, c);
+
+    ctx.fillStyle = "rgba(0,0,0,0.20)";
+    ctx.fillRect(0,0,c.width,c.height);
+
+    const W = c.width, H = c.height;
+    const dpr = window.devicePixelRatio || 1;
+    const pad = 10*dpr;
+
+    const bins = estimator.cosine.hist.length;
+    const barW = (W - 2*pad) / bins;
+
+    const rowH = (H - 2*pad) * 0.42;
+    const gap = (H - 2*pad) * 0.16;
+
+    const maxCos = Math.max(...estimator.cosine.hist, 1);
+    const maxGuided = Math.max(...estimator.guided.hist, 1);
+
+    ctx.font = `${Math.round(12*dpr)}px ui-sans-serif, system-ui`;
+    ctx.fillStyle = "rgba(255,255,255,0.65)";
+    ctx.fillText("cos", pad, pad - 2*dpr);
+    ctx.fillText("guided", pad, pad + rowH + gap - 2*dpr);
+
+    for (let i=0;i<bins;i++) {
+      const v = estimator.cosine.hist[i] / maxCos;
+      const x = pad + i*barW;
+      const y = pad;
+      const h = rowH * v;
+      ctx.fillStyle = `rgba(123, 220, 255, ${0.12 + 0.85*v})`;
+      ctx.fillRect(x, y + (rowH - h), barW, h);
+    }
+
+    for (let i=0;i<bins;i++) {
+      const v = estimator.guided.hist[i] / maxGuided;
+      const x = pad + i*barW;
+      const y = pad + rowH + gap;
+      const h = rowH * v;
+      ctx.fillStyle = `rgba(255, 140, 140, ${0.12 + 0.85*v})`;
+      ctx.fillRect(x, y + (rowH - h), barW, h);
+    }
+
+    ctx.strokeStyle = "rgba(255,255,255,0.12)";
+    ctx.strokeRect(pad, pad, W-2*pad, rowH);
+    ctx.strokeRect(pad, pad + rowH + gap, W-2*pad, rowH);
+  }
+
+  function updateSwatches() {
+    // Truth
+    const truthDisp = displayRGBComponents(estimator.truth);
+    setSwatchStyle(ui.swatchTruth, truthDisp);
+    ui.truthRight.textContent = `lum=${fmt(estimator.truthLum,3)}`;
+    ui.truthStats.textContent =
+      `RGB: (${fmt(estimator.truth.r,2)}, ${fmt(estimator.truth.g,2)}, ${fmt(estimator.truth.b,2)})\n` +
+      `Surfel: ${estimator.surfelSurface}  •  bins=${slg.bins}`;
+
+    // Cosine
+    const cosLum = luminanceLinear(estimator.cosine.mean);
+    const cosErr = Math.abs(cosLum - estimator.truthLum);
+    const cosDisp = displayRGBComponents(estimator.cosine.mean);
+    setSwatchStyle(ui.swatchCos, cosDisp);
+    ui.cosRight.textContent = `n=${estimator.cosine.n} • err=${fmt(cosErr,3)}`;
+    ui.cosStats.textContent = `RGB: (${fmt(estimator.cosine.mean.r,2)}, ${fmt(estimator.cosine.mean.g,2)}, ${fmt(estimator.cosine.mean.b,2)})`;
+
+    // Guided
+    const gLum = luminanceLinear(estimator.guided.mean);
+    const gErr = Math.abs(gLum - estimator.truthLum);
+    const gDisp = displayRGBComponents(estimator.guided.mean);
+    setSwatchStyle(ui.swatchGuided, gDisp);
+    ui.guidedRight.textContent = `n=${estimator.guided.n} • err=${fmt(gErr,3)}`;
+    ui.guidedStats.textContent = `RGB: (${fmt(estimator.guided.mean.r,2)}, ${fmt(estimator.guided.mean.g,2)}, ${fmt(estimator.guided.mean.b,2)})`;
+  }
+
+  // ============================================================
+  // Sampling loop (slowed by default)
+  // ============================================================
+  function doSamplingTick() {
+    const samples = Math.max(1, Number(ui.samplesPerTick.value)|0);
+
+    const params = {
+      strategy: ui.modeGuided.value,
+      pGuide: Number(ui.pGuide.value),
+      learningEnabled: ui.chkLearning.checked
+    };
+    const learnRate = Number(ui.learnRate.value);
+
+    slgBeginTick();
+
+    for (let i=0;i<samples;i++) {
+      sampleCosineOnce();
+      sampleGuidedOnce(params);
+    }
+
+    // if (params.learningEnabled) {
+    //   slgEndTickUpdate(learnRate);
+    // }
+
+    recordHistory();
+  }
+
+  let tickAccumulator = 0;
+  let lastTime = null;
+
+  function frame(ts) {
+    resizeCanvasToDisplaySize(weightsCanvas);
+    resizeCanvasToDisplaySize(errCanvas);
+
+    if (lastTime == null) lastTime = ts;
+    const dt = Math.min(100, ts - lastTime);
+    lastTime = ts;
+
+    const simHz = Math.max(1, Number(ui.simHz.value)|0);
+    const tickMs = 1000 / simHz;
+
+    if (running) {
+      tickAccumulator += dt;
+      const maxTicks = 6;
+      let ticks = 0;
+      while (tickAccumulator >= tickMs && ticks < maxTicks) {
+        doSamplingTick();
+        tickAccumulator -= tickMs;
+        ticks++;
+      }
+    }
+
+    drawScene();
+    drawWeights();
+    drawError();
+    drawPDFsIfVisible();
+    drawConvergenceIfVisible();
+    drawDensityIfVisible();
+    updateSwatches();
+
+    requestAnimationFrame(frame);
+  }
+
+  // initial settings apply (so skyIntensity derives correctly)
+  applySettingsToScene();
+  requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

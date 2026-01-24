@@ -1,0 +1,1507 @@
+<!-- surfelization-final.html -->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>WebGPU Surfelization Playground (No Grid)</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background:#0b0c10; }
+    #app { width: 100%; height: 100%; }
+    #hud {
+      position: absolute;
+      left: 10px; top: 10px;
+      padding: 8px 10px;
+      font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      color: #d7d7d7;
+      background: rgba(0,0,0,0.45);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 8px;
+      pointer-events: none;
+      white-space: pre;
+    }
+    #fallback {
+      position: absolute; inset: 0;
+      display: none;
+      place-items: center;
+      color: #fff;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      padding: 24px;
+    }
+    a { color: #9bdcff; }
+  </style>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.182.0/build/three.webgpu.js",
+      "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.182.0/build/three.webgpu.js",
+      "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.182.0/build/three.tsl.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.182.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+
+<body>
+  <div id="app"></div>
+  <div id="hud">Initializing…</div>
+  <div id="fallback"></div>
+
+  <script type="module">
+    import * as THREE from 'three/webgpu';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+    import { Inspector } from 'three/addons/inspector/Inspector.js';
+    import {
+      Fn, uniform, storage,
+      int, uint, float, vec2, vec3, vec4,
+      If, Loop,
+      min, max, abs, dot, length, clamp, smoothstep, mix,
+      texture, getViewPosition, uv,
+      pass, output,
+      workgroupId, localId, workgroupBarrier, workgroupArray,
+      atomicAdd, atomicMax, atomicMin, atomicStore, atomicLoad,
+      bitAnd, bitOr, bitcast, floatBitsToUint,
+      mrt, normalWorldGeometry, diffuseColor,
+      instancedArray, struct, instanceIndex, color, Break
+    } from 'three/tsl';
+
+    // ============================================================
+    // 0) CONFIG
+    // ============================================================
+    const MODEL_URL = '../models/bunny.glb';
+
+    const SURFEL_LIFE_RECYCLE  = 0x8000000;
+    const SURFEL_LIFE_RECYCLED = SURFEL_LIFE_RECYCLE + 1;
+    const SURFEL_KILL_SIGNAL = SURFEL_LIFE_RECYCLE;
+
+    const SURFEL_TTL_DEFAULT = 100;
+
+    const SURFEL_BASE_RADIUS = 0.12;
+    const SURFEL_RADIUS_OVERSCALE = 1.25;
+    const SURFEL_NORMAL_DIRECTION_SQUISH = 2.0;
+
+    // Reference distance for radius scaling
+    const SURFEL_RADIUS_REF_DIST = 3.2;
+
+    // Workgroup tile = 8x8 pixels
+    const TILE_X = 8;
+    const TILE_Y = 8;
+
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+
+    // ============================================================
+    // 1) MATERIAL HELPERS
+    // ============================================================
+    function makeStandardMaterial(hex, roughness = 0.85, metalness = 0.0) {
+      const mat = new THREE.MeshStandardNodeMaterial();
+      mat.colorNode = color(hex);
+      mat.color = new THREE.Color(hex);
+      mat.roughnessNode = float(roughness);
+      mat.metalnessNode = float(metalness);
+      return mat;
+    }
+
+    // ============================================================
+    // 2) GBUFFER (Normal + Diffuse + Depth)
+    // ============================================================
+    function createGBuffer(renderer, scale) {
+      const dpr = renderer.getPixelRatio ? renderer.getPixelRatio() : window.devicePixelRatio;
+      const w = Math.max(1, Math.floor(window.innerWidth  * dpr * scale));
+      const h = Math.max(1, Math.floor(window.innerHeight * dpr * scale));
+
+      const target = new THREE.RenderTarget(w, h, {
+        count: 2,
+        type: THREE.HalfFloatType,
+        format: THREE.RGBAFormat,
+        depthBuffer: true
+      });
+
+      target.depthTexture = new THREE.DepthTexture(w, h);
+      target.textures[0].name = 'normal';
+      target.textures[1].name = 'albedo';
+
+      for (let i = 0; i < 2; i++) {
+        target.textures[i].generateMipmaps = false;
+        target.textures[i].magFilter = THREE.NearestFilter;
+        target.textures[i].minFilter = THREE.NearestFilter;
+      }
+
+      const sceneMRT = mrt({
+        normal: normalWorldGeometry.mul(0.5).add(0.5),
+        albedo: vec4(diffuseColor.rgb, 1.0)
+      });
+      sceneMRT.setName('gbufferMRT')
+
+      function resize(newScale) {
+        const dpr = renderer.getPixelRatio ? renderer.getPixelRatio() : window.devicePixelRatio;
+        const w = Math.max(1, Math.floor(window.innerWidth  * dpr * newScale));
+        const h = Math.max(1, Math.floor(window.innerHeight * dpr * newScale));
+        target.setSize(w, h);
+      }
+
+      return { target, sceneMRT, resize };
+    }
+
+    // ============================================================
+    // 3) HASH / RANDOM
+    // ============================================================
+    const hash1 = Fn(([x_in]) => {
+      // MurmurHash3 finalizer - simple and good enough
+      let h = uint(x_in).toVar();
+      h.assign(h.bitXor(h.shiftRight(16)).mul(0x85ebca6b));
+      h.assign(h.bitXor(h.shiftRight(13)).mul(0xc2b2ae35));
+      return h.bitXor(h.shiftRight(16));
+    });
+
+    const hashPixelFrame = Fn(([px, py, frame]) => {
+      // Combine with golden ratio constant
+      let h = uint(px).toVar();
+      h.assign(h.bitXor(uint(py).add(0x9e3779b9).add(h.shiftLeft(6)).add(h.shiftRight(2))));
+      h.assign(h.bitXor(uint(frame).add(0x9e3779b9).add(h.shiftLeft(6)).add(h.shiftRight(2))));
+      // Finalize
+      h.assign(h.bitXor(h.shiftRight(16)).mul(0x85ebca6b));
+      h.assign(h.bitXor(h.shiftRight(13)).mul(0xc2b2ae35));
+      return h.bitXor(h.shiftRight(16));
+    });
+
+    const uintToU01Float = Fn(([h_in]) => {
+      let h = uint(h_in).toVar();
+      const mantissaMask = uint(0x007FFFFF);
+      const one = uint(0x3F800000);
+      h.bitAndAssign(mantissaMask);
+      h.bitOrAssign(one);
+      const r = bitcast(h, 'float');
+      return r.sub(1.0);
+    });
+
+    // ============================================================
+    // 4) SURFEL POOL
+    // ============================================================
+    const SurfelPacked = struct({
+      posr: 'vec4',
+      normal: 'vec3',
+      age: 'int'
+    }, 'SurfelPacked');
+
+    function createSurfelPool() {
+      let capacity = 0;
+
+      let surfelAttr = null;
+      let poolAttr = null;
+      let touchedAtomic = null;
+      let poolAllocAtomic = null;
+      let poolMaxAtomic = null;
+
+      let statsAttr = null;
+      let statsStore = null;
+      let statsNode = null;
+
+      function ensureCapacity(nextCap) {
+        if (capacity === nextCap && surfelAttr) return;
+        capacity = nextCap;
+
+        surfelAttr = new THREE.StorageBufferAttribute(new Float32Array(capacity * 8), 8);
+
+        const poolIdx = new Int32Array(capacity);
+        for (let i = 0; i < capacity; i++) poolIdx[i] = i;
+        poolAttr = new THREE.StorageInstancedBufferAttribute(poolIdx, 1);
+        poolAttr.needsUpdate = true;
+
+        poolAllocAtomic = instancedArray(new Int32Array(1), 'int').toAtomic().setName('poolAlloc');
+        poolMaxAtomic   = instancedArray(new Int32Array(1), 'int').toAtomic().setName('poolMax');
+        touchedAtomic   = instancedArray(new Int32Array(capacity), 'int').toAtomic().setName('surfelTouched');
+
+        statsAttr = null;
+        statsStore = null;
+        statsNode = null;
+      }
+
+      function getCapacity() { return capacity; }
+      function getSurfelAttr() { return surfelAttr; }
+      function getPoolAttr() { return poolAttr; }
+      function getTouchedAtomic() { return touchedAtomic; }
+      function getPoolAllocAtomic() { return poolAllocAtomic; }
+      function getPoolMaxAtomic() { return poolMaxAtomic; }
+
+      async function readStatsAsync(renderer) {
+        if (!poolAllocAtomic || !poolMaxAtomic) return null;
+        if (!statsAttr) {
+          statsAttr = new THREE.StorageInstancedBufferAttribute(new Int32Array(2), 1);
+          statsStore = storage(statsAttr, 'int', 2);
+          statsNode = null;
+        }
+
+        if (!statsNode) {
+          statsNode = Fn(() => {
+            statsStore.element(0).assign(atomicAdd(poolAllocAtomic.element(0), int(0)));
+            statsStore.element(1).assign(atomicAdd(poolMaxAtomic.element(0), int(0)));
+          })().compute(1).setName('Surfel Pool Stats');
+        }
+
+        await renderer.compute(statsNode);
+        const ab = await renderer.getArrayBufferAsync(statsAttr);
+        return new Int32Array(ab);
+      }
+
+      return {
+        ensureCapacity,
+        getCapacity,
+        getSurfelAttr,
+        getPoolAttr,
+        getTouchedAtomic,
+        getPoolAllocAtomic,
+        getPoolMaxAtomic,
+        readStatsAsync
+      };
+    }
+
+    // ============================================================
+    // 5) RESET / INIT POOL
+    // ============================================================
+    function createSurfelResetPass() {
+      let initNode = null;
+      let metaNode = null;
+
+      function run(renderer, pool) {
+        const cap = pool.getCapacity();
+        const surfelAttr = pool.getSurfelAttr();
+        const poolAttr = pool.getPoolAttr();
+        const poolAlloc = pool.getPoolAllocAtomic();
+        const poolMax = pool.getPoolMaxAtomic();
+        const touched = pool.getTouchedAtomic();
+
+        if (!surfelAttr || !poolAttr || !poolAlloc || !poolMax || !touched) return;
+
+        const surfels = storage(surfelAttr, SurfelPacked, cap);
+        const poolBuf = storage(poolAttr, 'int', cap);
+
+        if (!initNode) {
+          initNode = Fn(() => {
+            const i = int(instanceIndex);
+            surfels.element(i).get('posr').assign(vec4(0, 0, 0, 0));
+            surfels.element(i).get('normal').assign(vec3(0, 1, 0));
+            surfels.element(i).get('age').assign(int(SURFEL_LIFE_RECYCLED));
+            poolBuf.element(i).assign(i);
+            atomicStore(touched.element(i), int(0));
+          })().compute(cap).setName('Surfel Reset Init');
+        }
+
+        if (!metaNode) {
+          metaNode = Fn(() => {
+            atomicStore(poolAlloc.element(0), int(0));
+            atomicStore(poolMax.element(0), int(0));
+          })().compute(1).setName('Surfel Reset Meta');
+        }
+
+        renderer.compute(initNode);
+        renderer.compute(metaNode);
+      }
+
+      return { run };
+    }
+
+    // ============================================================
+    // 6) AGE / RECYCLE PASS
+    // ============================================================
+    function createSurfelAgePass() {
+      let node = null;
+
+      const U_TTL = uniform(SURFEL_TTL_DEFAULT);
+      const U_AGE_STEP = uniform(1);
+      const U_FORCE_KILL = uniform(false);
+
+      function setParams({ ttl, ageStep, forceKill }) {
+        if (ttl != null) U_TTL.value = ttl;
+        if (ageStep != null) U_AGE_STEP.value = ageStep;
+        if (forceKill != null) U_FORCE_KILL.value = forceKill;
+      }
+
+      function run(renderer, pool) {
+        const cap = pool.getCapacity();
+        const surfelAttr = pool.getSurfelAttr();
+        const poolAttr = pool.getPoolAttr();
+        const poolAlloc = pool.getPoolAllocAtomic();
+        const poolMax = pool.getPoolMaxAtomic();
+        const touched = pool.getTouchedAtomic();
+
+        if (!surfelAttr || !poolAttr || !poolAlloc || !poolMax || !touched) return;
+
+        if (!node || node.__cap !== cap) {
+          const surfels = storage(surfelAttr, SurfelPacked, cap);
+          const poolBuf = storage(poolAttr, 'int', cap);
+
+          node = Fn(() => {
+            const idx = int(instanceIndex);
+            const total = atomicAdd(poolMax.element(0), int(0));
+            const inRange = idx.lessThan(total);
+
+            If(inRange, () => {
+              const s = surfels.element(idx);
+              const ageNode = s.get('age');
+              let ageNow = int(ageNode).toVar();
+
+              const isRecycled = ageNow.equal(int(SURFEL_LIFE_RECYCLED));
+              If(isRecycled.not(), () => {
+                // FIX: Use atomicMin(val, 0) for atomic read+clear
+                // This reads the current value and sets to 0 atomically
+                const touch = atomicMin(touched.element(idx), int(0)).toVar();
+
+                // Kill request from despawn
+                const killReq = touch.greaterThanEqual(int(SURFEL_KILL_SIGNAL));
+
+                // Force-kill debug
+                If(U_FORCE_KILL, () => {
+                  ageNow.assign(int(SURFEL_LIFE_RECYCLE));
+                  ageNode.assign(int(SURFEL_LIFE_RECYCLE));
+                });
+
+                // If kill requested, mark for recycle
+                If(killReq, () => {
+                  ageNow.assign(int(SURFEL_LIFE_RECYCLE));
+                  ageNode.assign(int(SURFEL_LIFE_RECYCLE));
+                });
+
+                // Recycle path
+                const shouldRecycle = ageNow.equal(int(SURFEL_LIFE_RECYCLE)).or(ageNow.greaterThanEqual(int(U_TTL)));
+                If(shouldRecycle, () => {
+                  ageNode.assign(int(SURFEL_LIFE_RECYCLED));
+
+                  const oldAlloc = atomicAdd(poolAlloc.element(0), int(-1));
+                  const slot = oldAlloc.sub(int(1));
+                  If(slot.greaterThanEqual(int(0)).and(slot.lessThan(int(cap))), () => {
+                    poolBuf.element(slot).assign(idx);
+                  });
+                }).Else(() => {
+                  const step = int(U_AGE_STEP);
+                  // age += max(step - touchCredit, 0)
+                  const delta = max(int(0), step.sub(touch));
+                  const nextAge = max(int(0), ageNow.add(delta));
+                  ageNow.assign(nextAge);
+                  ageNode.assign(nextAge);
+
+                  If(ageNow.greaterThanEqual(int(U_TTL)), () => {
+                    ageNode.assign(int(SURFEL_LIFE_RECYCLED));
+
+                    const oldAlloc = atomicAdd(poolAlloc.element(0), int(-1));
+                    const slot = oldAlloc.sub(int(1));
+                    If(slot.greaterThanEqual(int(0)).and(slot.lessThan(int(cap))), () => {
+                      poolBuf.element(slot).assign(idx);
+                    });
+                  });
+                });
+              });
+            });
+          })().compute(cap).setName('Surfel Age/Recycling');
+
+          node.__cap = cap;
+        }
+
+        renderer.compute(node);
+      }
+
+      return { run, setParams, U_TTL };
+    }
+
+    // ============================================================
+    // 7) FIND MISSING (NO GRID - Pure Brute Force)
+    // ============================================================
+    function createSurfelFindMissingBruteForcePass() {
+      const U_FRAME = uniform(0);
+      const U_PROJ_INV = uniform(new THREE.Matrix4());
+      const U_CAM_WORLD = uniform(new THREE.Matrix4());
+      const U_CAM_POS = uniform(new THREE.Vector3());
+      const U_SCREEN_SIZE = uniform(new THREE.Vector2());
+      const U_TILE_STRIDE = uniform(1);
+
+      const U_TTL = uniform(SURFEL_TTL_DEFAULT);
+      const U_MAX_SCAN = uniform(2048);
+
+      const U_BASE_RADIUS = uniform(SURFEL_BASE_RADIUS);
+      const U_RADIUS_REF_DIST = uniform(SURFEL_RADIUS_REF_DIST);
+      const U_RADIUS_OVERSCALE = uniform(SURFEL_RADIUS_OVERSCALE);
+      const U_NORMAL_SQUISH = uniform(SURFEL_NORMAL_DIRECTION_SQUISH);
+
+      // Simplified thresholds (no grid-based adjustments)
+      const U_COVERAGE_THRESHOLD = uniform(0.1);
+      const U_SECOND_GATE = uniform(0.4);
+      const U_PROB_MULT = uniform(5000.0);
+      const U_DEPTH_DIV = uniform(64.0);
+      const U_KEEPALIVE_CREDIT = uniform(5);
+
+      const U_DESPAWN_ENABLED = uniform(true);
+      const U_DESPAWN_THRESHOLD = uniform(3.0);
+      const U_DESPAWN_SECOND_THRESH = uniform(0.8);
+
+      let tileAllocAttr = new THREE.StorageBufferAttribute(new Int32Array(1), 1);
+      let candPosAttr = new THREE.StorageBufferAttribute(new Float32Array(4), 4);
+      let candNorAttr = new THREE.StorageBufferAttribute(new Float32Array(4), 4);
+
+      let currentBufferCapacity = 0;
+      let computeNode = null;
+      let lastTileCount = -1;
+      let lastSurfelAttr = null;
+      let lastDepthTex = null;
+      let lastNormalTex = null;
+
+      function ensureTileBuffers(tileCount) {
+        const needed = Math.max(1, tileCount);
+        
+        // Only recreate if we need MORE capacity (not just different tile count)
+        if (needed > currentBufferCapacity) {
+          // Add 20% headroom to reduce frequent reallocations
+          const newCapacity = Math.ceil(needed * 1.2);
+          
+          tileAllocAttr = new THREE.StorageBufferAttribute(new Int32Array(newCapacity), 1);
+          candPosAttr = new THREE.StorageBufferAttribute(new Float32Array(newCapacity * 4), 4);
+          candNorAttr = new THREE.StorageBufferAttribute(new Float32Array(newCapacity * 4), 4);
+          
+          currentBufferCapacity = newCapacity;
+          
+          // Force compute node rebuild since buffers changed
+          computeNode = null;
+        }
+      }
+
+      function setParams(p) {
+        if (p.ttl != null) U_TTL.value = p.ttl;
+        if (p.maxScan != null) U_MAX_SCAN.value = p.maxScan;
+
+        if (p.baseRadius != null) U_BASE_RADIUS.value = p.baseRadius;
+        if (p.radiusRefDist != null) U_RADIUS_REF_DIST.value = p.radiusRefDist;
+        if (p.radiusOverscale != null) U_RADIUS_OVERSCALE.value = p.radiusOverscale;
+        if (p.normalSquish != null) U_NORMAL_SQUISH.value = p.normalSquish;
+
+        if (p.keepAliveCredit != null) U_KEEPALIVE_CREDIT.value = p.keepAliveCredit;
+        if (p.coverageThreshold != null) U_COVERAGE_THRESHOLD.value = p.coverageThreshold;
+        if (p.secondGate != null) U_SECOND_GATE.value = p.secondGate;
+        if (p.probMult != null) U_PROB_MULT.value = p.probMult;
+        if (p.depthDiv != null) U_DEPTH_DIV.value = p.depthDiv;
+
+        if (p.despawnEnabled != null) U_DESPAWN_ENABLED.value = p.despawnEnabled;
+        if (p.despawnThreshold != null) U_DESPAWN_THRESHOLD.value = p.despawnThreshold;
+        if (p.despawnSecondThresh != null) U_DESPAWN_SECOND_THRESH.value = p.despawnSecondThresh;
+      }
+
+      function run(renderer, camera, gbuffer, pool) {
+        const surfelAttr = pool.getSurfelAttr();
+        const poolMax = pool.getPoolMaxAtomic();
+        const touched = pool.getTouchedAtomic();
+
+        const texDepth = gbuffer.target.depthTexture;
+        const texNormal = gbuffer.target.textures[0];
+
+        if (!surfelAttr || !poolMax || !touched || !texDepth || !texNormal) return { tileCount: 0 };
+
+        const w = gbuffer.target.width;
+        const h = gbuffer.target.height;
+
+        const tileW = Math.max(1, Math.ceil(w / TILE_X));
+        const tileH = Math.max(1, Math.ceil(h / TILE_Y));
+        const tileCount = tileW * tileH;
+
+        ensureTileBuffers(tileCount);
+
+        U_FRAME.value = renderer.info.frame;
+        U_PROJ_INV.value.copy(camera.projectionMatrixInverse);
+        U_CAM_WORLD.value.copy(camera.matrixWorld);
+        U_CAM_POS.value.copy(camera.position);
+        U_SCREEN_SIZE.value.set(w, h);
+        U_TILE_STRIDE.value = tileW;
+
+        const mustRebuild =
+          (tileCount !== lastTileCount) ||
+          (surfelAttr !== lastSurfelAttr) ||
+          (texDepth !== lastDepthTex) ||
+          (texNormal !== lastNormalTex);
+
+        if (mustRebuild) {
+          computeNode = null;
+          lastTileCount = tileCount;
+          lastSurfelAttr = surfelAttr;
+          lastDepthTex = texDepth;
+          lastNormalTex = texNormal;
+        }
+
+        if (!computeNode) {
+          const cap = surfelAttr.count;
+          const surfels = storage(surfelAttr, SurfelPacked, cap);
+
+          const tileAlloc = storage(tileAllocAttr, 'int', tileAllocAttr.count);
+          const candPos = storage(candPosAttr, 'vec4', candPosAttr.count);
+          const candNor = storage(candNorAttr, 'vec4', candNorAttr.count);
+
+          const computeLogic = Fn(() => {
+            const gx = workgroupId.x.toInt();
+            const gy = workgroupId.y.toInt();
+            const lx = localId.x.toInt();
+            const ly = localId.y.toInt();
+
+            const laneIndex = ly.mul(int(TILE_X)).add(lx);
+            const tileIndex = gy.mul(int(U_TILE_STRIDE)).add(gx);
+
+            const gs_px_min_score_loc_packed = workgroupArray('atomic<u32>', 1);
+            const gs_px_max_score_loc_packed = workgroupArray('atomic<u32>', 1);
+            const gs_total = workgroupArray('int', 1);
+
+            const worldPos = vec3(0).toVar();
+            const normalW  = vec3(0,1,0).toVar();
+            const validPixel = int(0).toVar();
+
+            const bestVictimSid = int(-1).toVar();
+            const maxParentWeight = float(-1.0).toVar();
+
+            // init
+            If(laneIndex.equal(int(0)), () => {
+              gs_total.element(int(0)).assign( atomicLoad(poolMax.element(0)) );
+
+              tileAlloc.element(tileIndex).assign(int(0));
+              candPos.element(tileIndex).assign(vec4(0,0,0,0));
+              candNor.element(tileIndex).assign(vec4(0,0,1,0));
+
+              atomicStore(gs_px_min_score_loc_packed.element(int(0)), uint(0xFFFFFFFF));
+              atomicStore(gs_px_max_score_loc_packed.element(int(0)), uint(0));
+            });
+
+            workgroupBarrier();
+
+            const widthF  = U_SCREEN_SIZE.x;
+            const heightF = U_SCREEN_SIZE.y;
+            const widthI  = int(widthF);
+            const heightI = int(heightF);
+
+            const px = gx.mul(int(TILE_X)).add(lx);
+            const py = gy.mul(int(TILE_Y)).add(ly);
+            const pixelInBounds = px.lessThan(widthI).and(py.lessThan(heightI));
+
+            // OPTIMIZATION: Stochastic Voter
+            // Only ~10% of pixels will ever attempt to write to 'touched' atomic memory.
+            // This drastically reduces contention on the 'touched' buffer.
+            const seed = hashPixelFrame(px, py, uint(U_FRAME)).toVar();
+            const isVoter = uintToU01Float(hash1(seed)).lessThan(float(0.1));
+
+            If(pixelInBounds, () => {
+              const uvCoord = vec2(
+                px.toFloat().add(0.5).div(widthF),
+                py.toFloat().add(0.5).div(heightF)
+              );
+
+              const depth = texture(texDepth, uvCoord).r;
+              const valid = depth.greaterThan(1e-6).and(depth.lessThan(0.999));
+
+              If(valid, () => {
+                validPixel.assign(int(1));
+
+                const viewPosRaw = getViewPosition(uvCoord, depth, U_PROJ_INV);
+                const worldPos4 = U_CAM_WORLD.mul(vec4(viewPosRaw, 1.0));
+                worldPos.assign(worldPos4.xyz);
+
+                const encN = texture(texNormal, uvCoord).xyz;
+                normalW.assign(encN.mul(2.0).sub(1.0).normalize());
+
+                const pt_depth = viewPosRaw.z.negate();
+                // Compute radius based on distance to camera
+                const distCam = pt_depth; // length(sPos.sub(U_CAM_POS));
+                const surfelRadius = float(U_BASE_RADIUS).mul(
+                  max(float(1.0), distCam.div(float(U_RADIUS_REF_DIST)))
+                );
+
+                // Precompute squared radius for cheap distance check
+                const rOver = surfelRadius.mul(float(U_RADIUS_OVERSCALE));
+                const rLimitSq = rOver.mul(rOver);
+
+                // Random seed
+                const seed = hashPixelFrame(px, py, uint(U_FRAME)).toVar();
+
+                // Brute-force scan all surfels
+                const total = gs_total.element(int(0)).toVar(); // atomicAdd(poolMax.element(0), int(0)).toVar();
+                const scanCount = min(min(total, int(cap)), int(U_MAX_SCAN)).toVar();
+
+                const totalWeight = float(0).toVar();
+                const scoringWeight = float(0).toVar();
+                const highest = float(0).toVar();
+                const second = float(0).toVar();
+
+                Loop(scanCount, ({ i }) => {
+                  const sid = int(i);
+                  const s = surfels.element(sid);
+
+                  const age = int(s.get('age')).toVar();
+                  const alive = age.lessThan(int(U_TTL));
+
+                  If(alive, () => {
+
+                    const posr = s.get('posr');
+                    const sPos = posr.xyz;
+                    const sNor = s.get('normal');
+
+                    const posOffset = worldPos.sub(sPos);
+                    // Geometric Early-Out (Squared Distance)
+                    // Checks distance before loading normal or doing complex math
+                    const distSq = dot(posOffset, posOffset);
+
+                    If(distSq.lessThan(rLimitSq), () => {
+                      const d = length(posOffset);
+                      const alignPenalty = abs(dot(posOffset, sNor)).mul(float(U_NORMAL_SQUISH));
+                      const mahal = d.mul(float(1.0).add(alignPenalty));
+
+                      const dotN = max(float(0.0), dot(sNor, normalW));
+
+                      const weight = smoothstep(
+                        surfelRadius.mul(float(U_RADIUS_OVERSCALE)),
+                        float(0.0),
+                        mahal
+                      ).mul(dotN);
+
+                      const scoreW = smoothstep(
+                        surfelRadius,
+                        float(0.0),
+                        mahal
+                      ).mul(dotN);
+
+                      totalWeight.addAssign(weight);
+                      scoringWeight.addAssign(scoreW);
+
+
+                      // Track highest and second-highest weights
+                      If(weight.greaterThan(highest), () => {
+                        second.assign(highest);
+                        highest.assign(weight);
+                        bestVictimSid.assign(sid);
+                      }).ElseIf(weight.greaterThan(second), () => {
+                        second.assign(weight);
+                      });
+
+                      // Keep-alive: if geometrically close, credit the surfel
+                      const isRecycle = age.equal(int(SURFEL_LIFE_RECYCLE));
+                      const shouldKeepAlive = dotN.greaterThan(float(0.8)).and(isRecycle.not()).and(weight.greaterThan(float(0.1)));
+                      If(shouldKeepAlive.and(isVoter), () => {
+                        atomicMax(touched.element(sid), int(U_KEEPALIVE_CREDIT));
+                      });
+                    })
+  
+                  });
+                });
+
+                // -------------------------
+                // Despawn logic
+                // -------------------------
+                const shouldConsiderDespawn =
+                  U_DESPAWN_ENABLED
+                    .and(scoringWeight.greaterThan(float(U_DESPAWN_THRESHOLD)))
+                    .and(second.greaterThan(float(U_DESPAWN_SECOND_THRESH)));
+
+                If(shouldConsiderDespawn, () => {
+                  const scoreBits = floatBitsToUint(scoringWeight);
+                  const packedVote = bitOr(
+                    bitAnd(scoreBits, uint(0xFFFFFFC0)),
+                    uint(laneIndex)
+                  );
+                  atomicMax(gs_px_max_score_loc_packed.element(int(0)), packedVote);
+                });
+
+                // -----------------------
+                // Spawn logic
+                // -----------------------
+                const depthWeight = pt_depth.div(float(U_DEPTH_DIV));
+                const invW = float(1.0).div(widthF);
+                const invH = float(1.0).div(heightF);
+                const prob = float(U_PROB_MULT).mul(depthWeight).mul(invW).mul(invH);
+
+                seed.assign(hash1(seed));
+                const randomOk = uintToU01Float(seed).lessThan(prob);
+
+                const gateCoverage =
+                  second.lessThan(float(U_SECOND_GATE))
+                    .and(scoringWeight.lessThan(float(U_COVERAGE_THRESHOLD)));
+
+                const wantSpawn = gateCoverage.and(randomOk);
+
+                If(wantSpawn, () => {
+                  const scoreAsUint = floatBitsToUint(totalWeight);
+                  const packedVal = bitOr(
+                    bitAnd(scoreAsUint, uint(0xFFFFFFC0)),
+                    uint(laneIndex)
+                  );
+                  atomicMin(gs_px_min_score_loc_packed.element(int(0)), packedVal);
+                });
+              });
+            });
+
+            workgroupBarrier();
+
+            // --- Execute Despawn (winner takes action) ---
+            const maxScorePacked = atomicLoad(gs_px_max_score_loc_packed.element(int(0)));
+            If(maxScorePacked.notEqual(uint(0)).and(validPixel.equal(int(1))), () => {
+              const winningLane = bitAnd(maxScorePacked, uint(63)).toInt();
+
+              If(laneIndex.equal(winningLane), () => {
+                If(bestVictimSid.notEqual(int(-1)), () => {
+                  atomicMax(touched.element(bestVictimSid), int(SURFEL_KILL_SIGNAL));
+                });
+              });
+            });
+
+            // --- Execute Spawn (winner takes action) ---
+            const bestPacked = atomicLoad(gs_px_min_score_loc_packed.element(int(0)));
+            If(bestPacked.notEqual(uint(0xFFFFFFFF)).and(validPixel.equal(int(1))), () => {
+              const winningLaneIndex = bitAnd(bestPacked, uint(63)).toInt();
+
+              If(laneIndex.equal(winningLaneIndex), () => {
+                tileAlloc.element(tileIndex).assign(int(1));
+
+                candPos.element(tileIndex).assign(vec4(worldPos, 1.0));
+                candNor.element(tileIndex).assign(vec4(normalW, 1.0));
+              });
+            });
+          });
+
+          computeNode = computeLogic()
+            .computeKernel([TILE_X, TILE_Y, 1])
+            .setName('Find Missing (No Grid)');
+        }
+
+        renderer.compute(computeNode, [tileW, tileH, 1]);
+        return { tileCount };
+      }
+
+      return {
+        run,
+        setParams,
+        getTileAllocAttr: () => tileAllocAttr,
+        getCandPosAttr: () => candPosAttr,
+        getCandNorAttr: () => candNorAttr
+      };
+    }
+
+    // ============================================================
+    // 8) ALLOCATE PASS
+    // ============================================================
+    function createSurfelAllocatePass() {
+      const U_FRAME = uniform(0);
+      let node = null;
+      let lastTileCount = -1;
+      let lastCap = -1;
+
+      function run(renderer, pool, find, tileCount) {
+        if (tileCount <= 0) return;
+
+        const cap = pool.getCapacity();
+        const surfelAttr = pool.getSurfelAttr();
+        const poolAttr = pool.getPoolAttr();
+        const poolAlloc = pool.getPoolAllocAtomic();
+        const poolMax = pool.getPoolMaxAtomic();
+
+        const tileAllocAttr = find.getTileAllocAttr();
+        const candPosAttr = find.getCandPosAttr();
+        const candNorAttr = find.getCandNorAttr();
+
+        if (!surfelAttr || !poolAttr || !poolAlloc || !poolMax || !tileAllocAttr || !candPosAttr || !candNorAttr) return;
+
+        U_FRAME.value = renderer.info.frame;
+
+        if (!node || lastTileCount !== tileCount || lastCap !== cap) {
+          lastTileCount = tileCount;
+          lastCap = cap;
+
+          const surfels = storage(surfelAttr, SurfelPacked, cap);
+          const poolBuf = storage(poolAttr, 'int', cap);
+
+          const tileAlloc = storage(tileAllocAttr, 'int', tileAllocAttr.count);
+          const candPos = storage(candPosAttr, 'vec4', candPosAttr.count);
+          const candNor = storage(candNorAttr, 'vec4', candNorAttr.count);
+
+          node = Fn(() => {
+            const tile = int(instanceIndex);
+            const spawnFlag = tileAlloc.element(tile);
+
+            If(spawnFlag.equal(int(1)), () => {
+              const prevAlloc = atomicAdd(poolAlloc.element(0), int(1));
+              const within = prevAlloc.lessThan(int(cap));
+
+              If(within, () => {
+                const surfelIdx = poolBuf.element(prevAlloc);
+
+                atomicMax(poolMax.element(0), surfelIdx.add(int(1)));
+
+                const p = candPos.element(tile);
+                const n = candNor.element(tile).xyz.normalize();
+
+                const s = surfels.element(surfelIdx);
+                s.get('posr').assign(vec4(p.xyz, float(U_FRAME)));
+                s.get('normal').assign(n);
+                s.get('age').assign(int(0));
+              }).Else(() => {
+                atomicAdd(poolAlloc.element(0), int(-1));
+              });
+            });
+          })().compute(tileCount).setName('Surfel Allocate');
+        }
+
+        renderer.compute(node);
+      }
+
+      return { run };
+    }
+
+    // ============================================================
+    // 9) SCENE
+    // ============================================================
+    async function buildScene(scene) {
+      const hemi = new THREE.HemisphereLight(0xffffff, 0x223344, 0.15);
+      scene.add(hemi);
+
+      const dir = new THREE.DirectionalLight(0xffffff, 1.2);
+      dir.position.set(3, 6, 2);
+      scene.add(dir);
+
+      const offsetY = 0.5;
+      const pedestalH = 0.35;
+      const pedestalR = 1.1;
+      const pedestal = new THREE.Mesh(
+        new THREE.CylinderGeometry(pedestalR, pedestalR, pedestalH, 128, 1, false),
+        makeStandardMaterial(0x6f737a, 0.9, 0.0)
+      );
+      pedestal.position.set(0, pedestalH * 0.5 + offsetY, 0);
+      scene.add(pedestal);
+
+      const loader = new GLTFLoader();
+      let bunnyRoot = null;
+
+      try {
+        const gltf = await loader.loadAsync(MODEL_URL);
+        bunnyRoot = gltf.scene;
+      } catch (e) {
+        console.warn('Failed to load bunny.glb. Falling back to a sphere.', e);
+        const fallback = new THREE.Mesh(
+          new THREE.SphereGeometry(0.65, 40, 28),
+          makeStandardMaterial(0xe8e3d4, 0.6, 0.0)
+        );
+        fallback.position.set(0, pedestalH + 0.65, 0);
+        scene.add(fallback);
+        return { bunny: fallback, pedestal };
+      }
+
+      bunnyRoot.traverse((o) => {
+        if (o && o.isMesh) o.material = makeStandardMaterial(0xe8e3d4, 0.55, 0.0);
+      });
+
+      const box = new THREE.Box3().setFromObject(bunnyRoot);
+      const size = new THREE.Vector3();
+      box.getSize(size);
+      const maxDim = Math.max(size.x, size.y, size.z);
+      const s = 1.35 / Math.max(1e-6, maxDim);
+      bunnyRoot.scale.setScalar(s);
+
+      const box2 = new THREE.Box3().setFromObject(bunnyRoot);
+      const center = new THREE.Vector3();
+      box2.getCenter(center);
+      bunnyRoot.position.sub(center);
+
+      const box3 = new THREE.Box3().setFromObject(bunnyRoot);
+      const minY = box3.min.y;
+      bunnyRoot.position.y -= minY;
+      bunnyRoot.position.y += pedestal.position.y + pedestalH * 0.5 - 0.02;
+
+      scene.add(bunnyRoot);
+      return { bunny: bunnyRoot, pedestal };
+    }
+
+    // ============================================================
+    // 10) SCREEN DEBUG OVERLAY (No Grid)
+    // ============================================================
+    const DEBUG_MODES = {
+      Off: 0,
+      Surfels: 1,
+      SurfelWeighted: 2,
+      Normals: 3,
+      Depth: 4
+    };
+    const DEBUG_MODE_LABELS = ['Off', 'Surfels', 'Surfel Weighted', 'Normals', 'Depth'];
+
+    function createSurfelScreenDebugBruteForce() {
+      let overlayAttr = null;
+      let overlayStore = null;
+      let quad = null;
+      let blitMat = null;
+      let blitWidth = 0;
+      let blitHeight = 0;
+
+      let debugCompute = null;
+      let lastSurfelAttr = null;
+      let lastDepthTex = null;
+      let lastNormalTex = null;
+      let lastPixels = 0;
+
+      const U_PROJ_INV = uniform(new THREE.Matrix4());
+      const U_CAM_WORLD = uniform(new THREE.Matrix4());
+      const U_CAM_POS = uniform(new THREE.Vector3());
+      const U_NEAR = uniform(0.1);
+      const U_FAR = uniform(100.0);
+      const U_TTL = uniform(SURFEL_TTL_DEFAULT);
+      const U_MAX_SCAN = uniform(2048);
+
+      const U_BASE_RADIUS = uniform(SURFEL_BASE_RADIUS);
+      const U_RADIUS_REF_DIST = uniform(SURFEL_RADIUS_REF_DIST);
+      const U_RADIUS_OVERSCALE = uniform(SURFEL_RADIUS_OVERSCALE);
+      const U_NORMAL_SQUISH = uniform(SURFEL_NORMAL_DIRECTION_SQUISH);
+
+      const U_DEBUG_MODE = uniform(DEBUG_MODES.Off);
+
+      const debugParams = { mode: DEBUG_MODES.Off };
+      let show = false;
+
+      function setDebugMode(mode) {
+        debugParams.mode = mode;
+        U_DEBUG_MODE.value = mode;
+        show = mode !== DEBUG_MODES.Off;
+      }
+
+      function setParams(p) {
+        if (p.ttl != null) U_TTL.value = p.ttl;
+        if (p.maxScan != null) U_MAX_SCAN.value = p.maxScan;
+        if (p.baseRadius != null) U_BASE_RADIUS.value = p.baseRadius;
+        if (p.radiusRefDist != null) U_RADIUS_REF_DIST.value = p.radiusRefDist;
+        if (p.radiusOverscale != null) U_RADIUS_OVERSCALE.value = p.radiusOverscale;
+        if (p.normalSquish != null) U_NORMAL_SQUISH.value = p.normalSquish;
+      }
+
+      function ensureOverlay(width, height) {
+        const pixels = width * height;
+        const needsResize = !overlayAttr || overlayAttr.count !== pixels || blitWidth !== width || blitHeight !== height;
+        if (needsResize) {
+          overlayAttr = new THREE.StorageBufferAttribute(new Float32Array(pixels * 4), 4);
+          overlayStore = storage(overlayAttr, 'vec4', pixels);
+          debugCompute = null;
+        }
+        if (!quad || !blitMat || blitWidth !== width || blitHeight !== height) {
+          ensureBlit(width, height);
+        }
+
+        // We don't want to blend depth visualization, just straight to the screen
+        if(U_DEBUG_MODE.value === DEBUG_MODES.Depth && quad.material.transparent === true) {
+          quad.material.transparent = false;
+          quad.material.blending = THREE.NoBlending;
+          quad.material.needsUpdate = true;
+        } else if (U_DEBUG_MODE.value !== DEBUG_MODES.Depth && quad.material.transparent === false) {
+          quad.material.transparent = true;
+          quad.material.blending = THREE.AdditiveBlending;
+          quad.material.needsUpdate = true;
+        }
+
+        blitWidth = width;
+        blitHeight = height;
+      }
+
+      function ensureBlit(width, height) {
+        blitMat = new THREE.NodeMaterial();
+        blitMat.depthTest = false;
+        blitMat.depthWrite = false;
+        blitMat.transparent = true;
+        blitMat.blending = THREE.AdditiveBlending;
+
+        blitMat.colorNode = Fn(() => {
+          const Wf = float(width), Hf = float(height);
+          const x = uv().x.mul(Wf).floor();
+          const y = uv().y.mul(Hf).floor();
+          const flat = y.mul(Wf).add(x).toInt();
+          const val = overlayStore.element(flat);
+          return vec3(val.x, val.y, val.z);
+        })();
+
+        blitMat.opacityNode = Fn(() => {
+          const Wf = float(width), Hf = float(height);
+          const x = uv().x.mul(Wf).floor();
+          const y = uv().y.mul(Hf).floor();
+          const flat = y.mul(Wf).add(x).toInt();
+          return overlayStore.element(flat).w;
+        })();
+
+        quad = new THREE.QuadMesh(blitMat);
+        // quad.frustumCulled = false;
+        // quad.renderOrder = 9999;
+      }
+
+      function run(renderer, camera, gbuffer, pool) {
+        if (!show) return;
+
+        const texDepth = gbuffer.target.depthTexture;
+        const texNormal = gbuffer.target.textures[0];
+        if (!texDepth || !texNormal) return;
+
+        const W = gbuffer.target.width;
+        const H = gbuffer.target.height;
+        const pixels = Math.max(1, W * H);
+        ensureOverlay(W, H);
+        if (!overlayStore) return;
+
+        const surfelAttr = pool.getSurfelAttr();
+        const poolMax = pool.getPoolMaxAtomic();
+        if (!surfelAttr || !poolMax) return;
+
+        U_PROJ_INV.value.copy(camera.projectionMatrixInverse);
+        U_CAM_WORLD.value.copy(camera.matrixWorld);
+        U_CAM_POS.value.copy(camera.position);
+        U_NEAR.value = camera.near;
+        U_FAR.value = camera.far;
+
+        const needRebuild =
+          !debugCompute ||
+          surfelAttr !== lastSurfelAttr ||
+          texDepth !== lastDepthTex ||
+          texNormal !== lastNormalTex ||
+          pixels !== lastPixels;
+
+        if (needRebuild) {
+          debugCompute = null;
+          lastSurfelAttr = surfelAttr;
+          lastDepthTex = texDepth;
+          lastNormalTex = texNormal;
+          lastPixels = pixels;
+        }
+
+        if (!debugCompute) {
+          const capacity = surfelAttr.count;
+          const surfels = storage(surfelAttr, SurfelPacked, capacity);
+
+          const MODE_SURFELS = int(DEBUG_MODES.Surfels);
+          const MODE_SURFELS_WEIGHTED = int(DEBUG_MODES.SurfelWeighted);
+          const MODE_NORMALS = int(DEBUG_MODES.Normals);
+          const MODE_DEPTH = int(DEBUG_MODES.Depth);
+
+          debugCompute = Fn(() => {
+            const idx = int(instanceIndex);
+            const x = idx.mod(int(W));
+            const y = idx.div(int(W));
+            const uvCoord = vec2(
+              x.toFloat().add(0.5).div(float(W)),
+              y.toFloat().add(0.5).div(float(H))
+            );
+
+            const depth = texture(texDepth, uvCoord).r;
+            const encN = texture(texNormal, uvCoord).xyz;
+            const pixelNormal = encN.mul(2.0).sub(1.0).normalize();
+            const validDepth = depth.greaterThan(1e-6).and(depth.lessThan(0.999));
+
+            const outC = vec4(0).toVar();
+
+            If(U_DEBUG_MODE.equal(MODE_NORMALS), () => {
+              outC.assign(vec4(encN, 1.0));
+            });
+
+            If(U_DEBUG_MODE.equal(MODE_DEPTH), () => {
+              const viewPos = getViewPosition(uvCoord, depth, U_PROJ_INV);
+              const linear = viewPos.z.negate();
+              const lin01 = linear.sub(float(U_NEAR)).div(float(U_FAR).sub(float(U_NEAR))).clamp(0.0, 1.0);
+              outC.assign(vec4(lin01, lin01, lin01, 1.0));
+            });
+
+            const isSurfels = U_DEBUG_MODE.equal(MODE_SURFELS).or(U_DEBUG_MODE.equal(MODE_SURFELS_WEIGHTED));
+            If(isSurfels, () => {
+              const sumR = float(0).toVar();
+              const sumG = float(0).toVar();
+              const sumB = float(0).toVar();
+              const sumW = float(0).toVar();
+
+              If(validDepth, () => {
+                const viewPos = getViewPosition(uvCoord, depth, U_PROJ_INV);
+                const worldPos = U_CAM_WORLD.mul(vec4(viewPos, 1.0)).xyz;
+
+                const total = atomicAdd(poolMax.element(0), int(0)).toVar();
+                const scanCount = min(min(total, int(U_MAX_SCAN)), int(capacity)).toVar();
+
+                const pt_depth = viewPos.z.negate();
+                // Compute radius based on distance to camera
+                const distCam = pt_depth; // length(sPos.sub(U_CAM_POS));
+                const sRad = float(U_BASE_RADIUS).mul(
+                  max(float(1.0), distCam.div(float(U_RADIUS_REF_DIST)))
+                );
+
+                // Precompute squared radius for cheap distance check
+                const rOver = sRad.mul(float(U_RADIUS_OVERSCALE));
+                const rLimitSq = rOver.mul(rOver);
+
+                Loop(scanCount, ({ i }) => {
+                  const sid = int(i);
+                  const s = surfels.element(sid);
+                  const age = s.get('age');
+                  const alive = age.lessThan(int(U_TTL));
+
+                  If(alive, () => {
+                    const sPos = s.get('posr').xyz;
+
+
+                    const posOffset = worldPos.sub(sPos);
+                    const distSq = dot(posOffset, posOffset);
+
+                    If(distSq.lessThan(rLimitSq), () => {
+                      const sNor = s.get('normal');
+                      const d = length(posOffset);
+                      const alignPenalty = abs(dot(posOffset, sNor)).mul(float(U_NORMAL_SQUISH));
+                      const mahal = d.mul(float(1.0).add(alignPenalty));
+
+                      const dirW = max(float(0.0), dot(sNor, pixelNormal));
+                      // Surfels Mahal/Weighted
+                      const weightedW = smoothstep(
+                        sRad.mul(float(U_RADIUS_OVERSCALE)),
+                        float(0.0),
+                        mahal
+                      ).mul(dirW);
+
+                      const inside = d.lessThan(sRad.div(3.0));
+
+                      // Surfels Raw/Sharp
+                      const sRadForRender = sRad.div(3.0);
+                      const sRadForRenderEdge = sRadForRender.mul(0.02); // simple antialias
+                      const rawW = smoothstep(sRadForRender, sRadForRender.sub(sRadForRenderEdge), d).mul(dirW);
+                      const useWeighted = U_DEBUG_MODE.equal(MODE_SURFELS_WEIGHTED);
+                      const w = useWeighted.select(weightedW, rawW);
+
+                      const sidu = uint(sid);
+                      const r = uintToU01Float(hash1(sidu));
+                      const g = uintToU01Float(hash1(sidu.add(uint(1))));
+                      const b = uintToU01Float(hash1(sidu.add(uint(2))));
+
+                      sumR.addAssign(r.mul(w));
+                      sumG.addAssign(g.mul(w));
+                      sumB.addAssign(b.mul(w));
+                      sumW.addAssign(w);
+                    });
+                  });
+                });
+
+                const alpha = sumW.clamp(0.0, 1.0);
+                const invW = sumW.greaterThan(float(0)).select(float(1.0).div(sumW), float(0.0));
+                outC.assign(vec4(sumR.mul(invW), sumG.mul(invW), sumB.mul(invW), alpha));
+              });
+            });
+
+            const flat = y.mul(int(W)).add(x);
+            overlayStore.element(flat).assign(outC);
+          })().compute(pixels).setName('Surfel Debug');
+        }
+
+        renderer.compute(debugCompute);
+      }
+
+      function renderOverlay(renderer) {
+        if (!show || !quad) return;
+        quad.render(renderer);
+      }
+
+      return {
+        run,
+        setDebugMode,
+        setParams,
+        renderOverlay,
+        debugParams
+      };
+    }
+
+    // ============================================================
+    // 11) MAIN INIT
+    // ============================================================
+    const fallback = document.getElementById('fallback');
+    const hud = document.getElementById('hud');
+
+    if (!navigator.gpu) {
+      fallback.innerHTML = `
+        <strong>WebGPU is not supported in this browser.</strong><br><br>
+        Try a recent version of Chrome, Edge, Firefox or Safari.
+      `;
+      fallback.style.display = 'grid';
+      throw new Error('WebGPU not supported');
+    }
+
+    const renderer = new THREE.WebGPURenderer({ antialias: true });
+    renderer.inspector = new Inspector();
+    renderer.autoClear = false;
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    document.getElementById('app').appendChild(renderer.domElement);
+
+    await renderer.init();
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x10131a);
+
+    const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+    camera.position.set(0, 2.5, 5);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.08;
+    controls.target.set(0, 1.0, 0);
+    controls.update();
+
+    await buildScene(scene);
+
+    // Post-processing
+    const postProcessing = new THREE.PostProcessing(renderer);
+    const scenePass = pass(scene, camera);
+    const sceneMRT = mrt({ output: output });
+    sceneMRT.setName('sceneMRT');
+    scenePass.setMRT(sceneMRT);
+    const scenePassColor = scenePass.getTextureNode('output').toInspector('Color');
+    postProcessing.outputNode = scenePassColor;
+
+    // Passes
+    const pool = createSurfelPool();
+    const resetPass = createSurfelResetPass();
+    const agePass = createSurfelAgePass();
+    const findPass = createSurfelFindMissingBruteForcePass();
+    const allocPass = createSurfelAllocatePass();
+    const screenDebug = createSurfelScreenDebugBruteForce();
+
+    // Init pool
+    const params = {
+      capacity: 512,
+      gbufferScale: isMobile ? 0.5 : 1.0,
+      maxScan: 512,
+
+      baseRadius: SURFEL_BASE_RADIUS,
+      radiusRefDist: SURFEL_RADIUS_REF_DIST,
+      radiusOverscale: SURFEL_RADIUS_OVERSCALE,
+      normalSquish: SURFEL_NORMAL_DIRECTION_SQUISH,
+
+      keepAliveCredit: 5,
+
+      coverageThreshold: 0.1,
+      secondGate: 0.4,
+      probMult: 5000.0,
+      depthDiv: 64.0,
+
+      despawnEnabled: true,
+      despawnThreshold: 3.0,
+      despawnSecondThresh: 0.8,
+
+      ttl: SURFEL_TTL_DEFAULT,
+      ageStep: 1,
+      forceKill: false,
+
+      debugMode: DEBUG_MODES.Surfels,
+      debugHz: 10,
+      paused: false
+    };
+
+    pool.ensureCapacity(params.capacity);
+    resetPass.run(renderer, pool);
+    screenDebug.setDebugMode(params.debugMode);
+
+    function createUI(renderer) {
+      if (renderer.inspector && typeof renderer.inspector.createParameters === 'function') {
+        return renderer.inspector.createParameters('Surfelization');
+      }
+      const noopController = {
+        name: () => noopController,
+        onChange: () => noopController,
+        listen: () => noopController
+      };
+      const noopFolder = {
+        add: () => noopController,
+        addFolder: () => noopFolder,
+        close: () => noopFolder
+      };
+      return noopFolder;
+    }
+
+    const gui = createUI(renderer);
+
+    {
+      const f = gui.addFolder('Pool');
+      f.add(params, 'capacity', 512, 65536, 512).name('Capacity').onChange((v) => {
+        params.capacity = v;
+        pool.ensureCapacity(v);
+        resetPass.run(renderer, pool);
+      });
+      f.add(params, 'gbufferScale', 0.1, 1.0, 0.05).name('GBuffer scale');
+      f.add(params, 'maxScan', 128, 16384, 128).name('Max scan');
+    }
+
+    {
+      const f = gui.addFolder('Kernel');
+      f.add(params, 'baseRadius', 0.01, 1.0, 0.01).name('Base radius');
+      f.add(params, 'radiusRefDist', 0.5, 10.0, 0.1).name('Ref dist');
+      f.add(params, 'radiusOverscale', 1.0, 2.0, 0.05).name('Overscale');
+      f.add(params, 'normalSquish', 0.0, 6.0, 0.05).name('Normal squish');
+    }
+
+    {
+      const f = gui.addFolder('Spawn');
+      f.add(params, 'coverageThreshold', 0.0, 1.0, 0.005).name('scoringWeight <');
+      f.add(params, 'secondGate', 0.0, 1.0, 0.005).name('second <');
+      f.add(params, 'probMult', 0.0, 20000.0, 10.0).name('probMult');
+      f.add(params, 'depthDiv', 1.0, 256.0, 1.0).name('depthDiv');
+    }
+
+    {
+      const f = gui.addFolder('Despawn');
+      f.add(params, 'despawnEnabled').name('Enabled');
+      f.add(params, 'despawnThreshold', 1.0, 10.0, 0.1).name('Threshold');
+      f.add(params, 'despawnSecondThresh', 0.0, 1.0, 0.05).name('Second thresh');
+    }
+
+    {
+      const f = gui.addFolder('Aging');
+      f.add(params, 'ttl', 10, 2000, 1).name('TTL');
+      f.add(params, 'ageStep', 0, 5, 1).name('Age step');
+      f.add(params, 'keepAliveCredit', 0, 20, 1).name('KeepAlive credit');
+      f.add(params, 'forceKill').name('Force kill (debug)');
+    }
+
+    {
+      const f = gui.addFolder('Debug');
+      const debugOptions = {
+        Off: DEBUG_MODES.Off,
+        Surfels: DEBUG_MODES.Surfels,
+        'Surfel Weighted': DEBUG_MODES.SurfelWeighted,
+        Normals: DEBUG_MODES.Normals,
+        Depth: DEBUG_MODES.Depth
+      };
+
+      f.add(params, 'debugMode', debugOptions).name('Mode').onChange((v) => {
+        params.debugMode = Number(v);
+        screenDebug.setDebugMode(params.debugMode);
+      });
+      // f.add(params, 'debugHz', 1, 60, 1).name('Readback Hz');
+    }
+
+    gui.add(params, 'Paused');
+    
+    // Hack to hide mini params
+    renderer.inspector.profiler.tabs.parameters.builtinButton.onclick(new Event(0))
+
+    // GBuffer
+    let gbuffer = createGBuffer(renderer, params.gbufferScale);
+
+    // Readback scheduling
+    let lastReadbackMs = 0;
+    let readbackInFlight = false;
+
+    let lastAliveCount = 0;
+    let lastMaxCount = 0;
+    let lastTileCount = 0;
+
+    function applyPassParams() {
+      agePass.setParams({ ttl: params.ttl, ageStep: params.ageStep, forceKill: params.forceKill });
+
+      findPass.setParams({
+        ttl: params.ttl,
+        maxScan: params.maxScan,
+
+        baseRadius: params.baseRadius,
+        radiusRefDist: params.radiusRefDist,
+        radiusOverscale: params.radiusOverscale,
+        normalSquish: params.normalSquish,
+
+        keepAliveCredit: params.keepAliveCredit,
+        coverageThreshold: params.coverageThreshold,
+        secondGate: params.secondGate,
+
+        probMult: params.probMult,
+        depthDiv: params.depthDiv,
+
+        despawnEnabled: params.despawnEnabled,
+        despawnThreshold: params.despawnThreshold,
+        despawnSecondThresh: params.despawnSecondThresh
+      });
+
+      screenDebug.setParams({
+        ttl: params.ttl,
+        maxScan: params.maxScan,
+        baseRadius: params.baseRadius,
+        radiusRefDist: params.radiusRefDist,
+        radiusOverscale: params.radiusOverscale,
+        normalSquish: params.normalSquish
+      });
+    }
+
+    function resizeAll() {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      gbuffer.resize(params.gbufferScale);
+    }
+
+    window.addEventListener('resize', resizeAll);
+
+    // ============================================================
+    // 12) ANIMATION LOOP
+    // ============================================================
+    renderer.setAnimationLoop(() => {
+      controls.update();
+
+      // lazy gbuffer resize
+      if (gbuffer.target) {
+        const dpr = renderer.getPixelRatio ? renderer.getPixelRatio() : window.devicePixelRatio;
+        const wantW = Math.max(1, Math.floor(window.innerWidth  * dpr * params.gbufferScale));
+        const wantH = Math.max(1, Math.floor(window.innerHeight * dpr * params.gbufferScale));
+        if (gbuffer.target.width !== wantW || gbuffer.target.height !== wantH) {
+          gbuffer.resize(params.gbufferScale);
+        }
+      }
+
+      applyPassParams();
+
+      if (!params.paused) {
+        // --- 1) GBUFFER PASS ---
+        const prevTarget = renderer.getRenderTarget();
+        renderer.setMRT(gbuffer.sceneMRT);
+        renderer.setRenderTarget(gbuffer.target);
+        renderer.clear();
+
+        scene.background = null;
+        camera.layers.set(0);
+        renderer.render(scene, camera);
+
+        renderer.setRenderTarget(prevTarget);
+        renderer.setMRT(null);
+
+        // --- 2) FIND MISSING (no grid) ---
+        const { tileCount } = findPass.run(renderer, camera, gbuffer, pool);
+        lastTileCount = tileCount;
+
+        // --- 3) AGE / RECYCLE ---
+        agePass.run(renderer, pool);
+
+        // --- 4) ALLOCATE ---
+        allocPass.run(renderer, pool, findPass, tileCount);
+      }
+
+      // --- DISPLAY ---
+      scene.background = new THREE.Color(0x10131a);
+      if (params.debugMode !== DEBUG_MODES.Off) {
+  screenDebug.run(renderer, camera, gbuffer, pool);
+  renderer.render(scene, camera);  // Direct render, no post-processing
+  screenDebug.renderOverlay(renderer);
+} else {
+  postProcessing.render();
+}
+
+      // --- CPU readback for numbers only ---
+      const now = performance.now();
+      const intervalMs = 1000 / Math.max(1, params.debugHz);
+
+      if (!readbackInFlight && (now - lastReadbackMs) >= intervalMs) {
+        readbackInFlight = true;
+        lastReadbackMs = now;
+
+        pool.readStatsAsync(renderer).then((stats) => {
+          if (stats) {
+            lastAliveCount = stats[0];
+            lastMaxCount = stats[1];
+          }
+        }).finally(() => {
+          readbackInFlight = false;
+        });
+      }
+
+      hud.textContent =
+`Surfels: ${lastAliveCount}/${params.capacity}
+GBuffer: ${gbuffer.target.width}x${gbuffer.target.height} (${params.gbufferScale.toFixed(2)}x)`;
+    });
+  </script>
+</body>
+</html>
