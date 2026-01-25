@@ -4,9 +4,7 @@ https://github.com/user-attachments/assets/8f6de66b-11be-45b3-aed1-b9e8b0db62be
 
 Surfel-based global illumination for the web, built on WebGPU and Three.js. The project explores whether surfels (small surface elements with position, normal, and radius) can look good enough and run fast enough for real-time, dynamic indirect lighting on the open web using a fully compute-driven pipeline.
 
-If the video does not play in your Markdown renderer, open `progress/trailer-scaled.mp4` directly.
-
-Read the write-up: [Surfel-based global illumination on the web](https://juretriglav.si/surfel-based-global-illumination-on-the-web)
+Read the detailed write-up: [Surfel-based global illumination on the web](https://juretriglav.si/surfel-based-global-illumination-on-the-web)
 
 [Live demo](https://jure.github.io/webgiya/)
 
