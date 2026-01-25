@@ -8,7 +8,7 @@
   </head>
   <body>
     <div id="app">
-      <div id="loading-overlay" class="overlay">
+      <div id="loading-overlay" class="overlay" hidden>
         <div class="overlay-card">
           <div class="overlay-title">Loading…</div>
           <div id="loading-message" class="overlay-message">
@@ -16,7 +16,7 @@
           </div>
         </div>
       </div>
-      <div id="error-overlay" class="overlay hidden">
+      <div id="error-overlay" class="overlay hidden" hidden>
         <div class="overlay-card">
           <div class="overlay-title">Something went wrong</div>
           <div id="error-message" class="overlay-message"></div>
@@ -32,6 +32,11 @@
       body {
         margin: 0;
         overflow: hidden;
+        background: #000;
+        color: #e0e0e0;
+      }
+      #app {
+        background: #000;
       }
       canvas {
         display: block;

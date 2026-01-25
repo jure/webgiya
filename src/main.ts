@@ -58,6 +58,7 @@ let hasFatalError = false;
 
 function setOverlayVisible(element: HTMLDivElement | null, visible: boolean) {
   if (!element) return;
+  element.hidden = !visible;
   element.classList.toggle('hidden', !visible);
 }
 
