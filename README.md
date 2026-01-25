@@ -1,6 +1,6 @@
 # Webgiya
 
-[![Watch the video](https://raw.githubusercontent.com/jure/webgiya/main/progress/trailer.png)](https://raw.githubusercontent.com/jure/webgiya/main/progress/trailer-scaled.mp4)
+https://github.com/user-attachments/assets/8f6de66b-11be-45b3-aed1-b9e8b0db62be
 
 Surfel-based global illumination for the web, built on WebGPU and Three.js. The project explores whether surfels (small surface elements with position, normal, and radius) can look good enough and run fast enough for real-time, dynamic indirect lighting on the open web using a fully compute-driven pipeline.
 
