@@ -433,10 +433,19 @@ const traaNode = traa(
 postProcessing.outputNode = traaNode;
 
 window.addEventListener('resize', () => {
-  camera.aspect = window.innerWidth / window.innerHeight;
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+  camera.aspect = w / h;
   camera.updateProjectionMatrix();
-  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setSize(w, h);
+  // Resize offscreen gbuffer
   gbuffer.resize(renderer);
+
+  postProcessing.needsUpdate = true;
+
+  mustRebuildCompositeMaterial = true;
 });
 
 const prevCameraPos = new THREE.Vector3();
