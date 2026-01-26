@@ -4,7 +4,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 export type SceneBundle = {
   scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
-  gbufferCamera: THREE.PerspectiveCamera;
+
   controls: OrbitControls;
   dirLight: THREE.DirectionalLight;
   hemi?: THREE.HemisphereLight;
@@ -22,10 +22,6 @@ export function createScene(renderer: THREE.WebGPURenderer): SceneBundle {
   );
   camera.position.set(2, 5, 5);
 
-  const gbufferCamera = camera.clone();
-  gbufferCamera.position.set(0, 0, 0);
-  camera.add(gbufferCamera);
-
   const controls = new OrbitControls(camera, renderer.domElement);
   // controls.enableDamping = true;
   controls.target.set(0, 0, 0);
@@ -41,5 +37,5 @@ export function createScene(renderer: THREE.WebGPURenderer): SceneBundle {
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
-  return { scene, camera, gbufferCamera, controls, dirLight };
+  return { scene, camera, controls, dirLight };
 }

@@ -125,7 +125,7 @@ const { renderer } = await initRenderer().catch((error) => {
 });
 const gui = createUI(renderer);
 const sceneBundle = createScene(renderer);
-const { scene, camera, controls, gbufferCamera } = sceneBundle;
+const { scene, camera, controls } = sceneBundle;
 let dirLight = sceneBundle.dirLight;
 const dirLightDefaults = captureDirectionalLightDefaults(dirLight);
 const defaultCameraSettings: NonNullable<SceneSettings['camera']> = {
@@ -171,7 +171,6 @@ let envTex: THREE.DataTexture | null = null;
 
 // Viewport camera can show debug
 camera.layers.enable(1);
-gbufferCamera.layers.set(0); // Everything but the debug stuff
 
 const gbuffer = createGBuffer(renderer);
 
