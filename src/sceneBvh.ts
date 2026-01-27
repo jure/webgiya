@@ -5,7 +5,7 @@ import { MeshBVH, SAH } from './external/three-mesh-bvh/src';
 
 import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js';
 import { storage } from 'three/tsl';
-import { buildDiffuseArrayTexture } from './debug/diffuseArray';
+import { buildDiffuseArrayTexture } from './diffuseArray';
 
 export type SceneBVHBundle = {
   // TSL Storage Nodes
@@ -14,7 +14,7 @@ export type SceneBVHBundle = {
   normalNode: THREE.StorageBufferNode;
   indexNode: THREE.StorageBufferNode;
   colorNode: THREE.StorageBufferNode;
-  diffuseArrayTex: THREE.DataArrayTexture;
+  diffuseArrayTex: THREE.Texture;
   //   update: (scene: THREE.Scene) => void;
 };
 
@@ -26,6 +26,7 @@ export function createSceneBVH(
   scene.updateMatrixWorld(true);
 
   const { diffuseArrayTex, materialIdByUUID } = buildDiffuseArrayTexture(
+    renderer,
     scene,
     1024,
   );

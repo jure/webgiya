@@ -13,6 +13,7 @@ import {
   max,
   min,
   oneMinus,
+  sampler,
   smoothstep,
   storage,
   texture as tslTexture,
@@ -57,6 +58,13 @@ import {
 } from '../surfelRadialDepth';
 import { hemiOctSquareEncode } from '../surfelIntegratePass';
 import { resolveIrradiance } from '../surfelGIResolvePass';
+import type { SceneBVHBundle } from '../sceneBvh';
+import {
+  bvhIntersectFirstHit,
+  getVertexAttribute,
+  rayStruct,
+  constants,
+} from '../external/three-mesh-bvh/src/webgpu';
 
 export const SCREEN_DEBUG_MODES = {
   Off: 0,
@@ -76,6 +84,8 @@ export const SCREEN_DEBUG_MODES = {
   RadialOcclusion: 14,
   RadialDepthTile: 15,
   Variance: 16,
+  AlbedoBVH: 17,
+  AlbedoMatch: 18,
 } as const;
 
 const SCREEN_DEBUG_MODE_LIST = [
@@ -91,6 +101,8 @@ const SCREEN_DEBUG_MODE_LIST = [
   ['Depth', SCREEN_DEBUG_MODES.Depth],
   ['Normals', SCREEN_DEBUG_MODES.Normals],
   ['Albedo', SCREEN_DEBUG_MODES.Albedo],
+  ['Albedo BVH', SCREEN_DEBUG_MODES.AlbedoBVH],
+  ['Albedo Match', SCREEN_DEBUG_MODES.AlbedoMatch],
   ['Coverage', SCREEN_DEBUG_MODES.Coverage],
   ['SLG Grid', SCREEN_DEBUG_MODES.SLGGrid],
   ['Spawn/Despawn', SCREEN_DEBUG_MODES.SpawnDespawn],
@@ -102,6 +114,51 @@ const SCREEN_DEBUG_MODE_OPTIONS = Object.fromEntries(SCREEN_DEBUG_MODE_LIST);
 
 export type ScreenDebugMode =
   (typeof SCREEN_DEBUG_MODES)[keyof typeof SCREEN_DEBUG_MODES];
+
+const sampleDiffuseArray = wgslFn(/* wgsl */ `
+  fn sampleDiffuseArray(
+    tex: texture_2d_array<f32>,
+    texSampler: sampler,
+    uvIn: vec2f,
+    layerIn: i32
+  ) -> vec3f {
+    let dims = textureDimensions(tex, 0);
+    let w = max(1u, dims.x);
+    let h = max(1u, dims.y);
+
+    let layerCount = textureNumLayers(tex);
+    let layer = clamp(layerIn, 0, i32(layerCount) - 1);
+
+    let c = textureSampleLevel(tex, texSampler, uvIn, layer, 0.0);
+    return c.rgb;
+  }
+`);
+
+const bvhAlbedoAtRay = wgslFn(
+  /* wgsl */ `
+  fn bvhAlbedoAtRay(
+    origin: vec3f,
+    direction: vec3f,
+    tex: texture_2d_array<f32>,
+    texSampler: sampler
+  ) -> vec4f {
+    var ray: Ray;
+    ray.origin = origin;
+    ray.direction = direction;
+
+    let hit = bvhIntersectFirstHit(ray);
+    if (hit.didHit) {
+      let uvMat = getVertexAttribute(hit.barycoord, hit.indices.xyz);
+      let matId = i32(round(uvMat.z));
+      let albedo = sampleDiffuseArray(tex, texSampler, uvMat.xy, matId);
+      return vec4f(albedo, 1.0);
+    }
+
+    return vec4f(0.0, 0.0, 0.0, 0.0);
+  }
+`,
+  [bvhIntersectFirstHit, getVertexAttribute, sampleDiffuseArray, rayStruct, constants],
+);
 
 export function createSurfelScreenDebug(
   grid: SurfelHashGrid,
@@ -121,6 +178,12 @@ export function createSurfelScreenDebug(
   let lastOffsetsAndListAttr: THREE.StorageBufferAttribute | null = null;
   let lastSurfelDepthAttr: THREE.StorageBufferAttribute | null = null;
   let lastPixels = 0;
+  let lastBvhNode: THREE.StorageBufferNode | null = null;
+  let lastBvhPositionNode: THREE.StorageBufferNode | null = null;
+  let lastBvhIndexNode: THREE.StorageBufferNode | null = null;
+  let lastBvhColorNode: THREE.StorageBufferNode | null = null;
+  let lastDiffuseTex: THREE.Texture | null = null;
+  let lastBvhPixels = 0;
 
   // uniforms (same as in your generation pass)
   const U_PROJ_INV = uniform(new THREE.Matrix4());
@@ -134,6 +197,7 @@ export function createSurfelScreenDebug(
   const U_GRID_STRIDE = uniform(int(1));
 
   let debugCompute: THREE.ComputeNode | null = null;
+  let debugComputeBvh: THREE.ComputeNode | null = null;
   // knobs
   let maxFetchPerPixel = 1024; // safety cap for heavy cells
   let show = false; // toggle
@@ -193,6 +257,7 @@ export function createSurfelScreenDebug(
       );
       overlayStore = storage(overlayAttr, 'vec4', pixels);
       debugCompute = null; // rebuild compute with the new resolution
+      debugComputeBvh = null; // rebuild BVH debug compute with the new resolution
     }
     if (!quad || !blitMat || blitWidth !== width || blitHeight !== height) {
       ensureBlit(width, height);
@@ -238,6 +303,7 @@ export function createSurfelScreenDebug(
     gbuffer: { target: THREE.RenderTarget },
     find: SurfelFindMissingPass,
     prevCameraPos: THREE.Vector3,
+    bvh: SceneBVHBundle,
   ) {
     if (!show) return;
 
@@ -245,13 +311,127 @@ export function createSurfelScreenDebug(
     const texNormal = gbuffer.target.textures?.[0]; // normals
     const texAlbedo = gbuffer.target.textures?.[1]; // albedo
 
-    if (!texDepth || !texNormal) return;
+    if (!texDepth || !texNormal || !texAlbedo) return;
 
     const W = gbuffer.target.width;
     const H = gbuffer.target.height;
     const pixels = Math.max(1, W * H);
     ensureOverlay(W, H);
     if (!overlayStore) return;
+
+    const isBvhMode =
+      debugMode === SCREEN_DEBUG_MODES.AlbedoBVH ||
+      debugMode === SCREEN_DEBUG_MODES.AlbedoMatch;
+
+    // upload camera uniforms
+    U_PROJ_INV.value.copy(camera.projectionMatrixInverse);
+    U_CAM_WORLD.value.copy(camera.matrixWorld);
+    U_CAM_POS.value.copy(camera.position);
+
+    if (isBvhMode) {
+      const bvhNode = bvh.bvhNode;
+      const bvhPositionNode = bvh.positionNode;
+      const bvhIndexNode = bvh.indexNode;
+      const bvhColorNode = bvh.colorNode;
+      const diffuseArrayTex = bvh.diffuseArrayTex;
+
+      if (
+        !bvhNode ||
+        !bvhPositionNode ||
+        !bvhIndexNode ||
+        !bvhColorNode ||
+        !diffuseArrayTex
+      )
+        return;
+
+      const needRebuildBvh =
+        !debugComputeBvh ||
+        pixels !== lastBvhPixels ||
+        bvhNode !== lastBvhNode ||
+        bvhPositionNode !== lastBvhPositionNode ||
+        bvhIndexNode !== lastBvhIndexNode ||
+        bvhColorNode !== lastBvhColorNode ||
+        diffuseArrayTex !== lastDiffuseTex;
+
+      if (needRebuildBvh) {
+        lastBvhPixels = pixels;
+        lastBvhNode = bvhNode;
+        lastBvhPositionNode = bvhPositionNode;
+        lastBvhIndexNode = bvhIndexNode;
+        lastBvhColorNode = bvhColorNode;
+        lastDiffuseTex = diffuseArrayTex;
+
+        const diffuseTex = tslTexture(diffuseArrayTex);
+        const diffuseTexSampler = sampler(diffuseArrayTex);
+
+        const includeBvh = wgslFn(
+          /* wgsl */ `
+          fn include_bvh() -> i32 {
+            return 0;
+          }
+        `,
+          [bvhNode, bvhPositionNode, bvhIndexNode, bvhColorNode],
+        );
+
+        const MODE_ALBEDO_MATCH = int(SCREEN_DEBUG_MODES.AlbedoMatch);
+
+        debugComputeBvh = Fn(() => {
+          const includeBvhBindings = includeBvh();
+          const tid = int(instanceIndex).add(includeBvhBindings);
+          const x = tid.mod(int(W));
+          const y = tid.div(int(W));
+          const uvCoord = vec2(
+            x.toFloat().add(0.5).div(W),
+            y.toFloat().add(0.5).div(H),
+          );
+
+          const depth = tslTexture(texDepth, uvCoord).r;
+          const validDepth = depth
+            .greaterThan(float(1e-6))
+            .and(depth.lessThan(float(1e6)));
+
+          const viewPos = getViewPosition(uvCoord, depth, U_PROJ_INV);
+          const worldPos = U_CAM_WORLD.mul(vec4(viewPos, 1.0)).xyz;
+
+          const outC = vec4(0);
+
+          If(validDepth, () => {
+            const rayDir = normalize(worldPos.sub(U_CAM_POS));
+            const hitAlbedo = bvhAlbedoAtRay(
+              U_CAM_POS,
+              rayDir,
+              diffuseTex,
+              diffuseTexSampler,
+            );
+            const hitFlag = hitAlbedo.w;
+
+            If(hitFlag.greaterThan(float(0.0)), () => {
+              const arrayAlbedo = hitAlbedo.xyz;
+              const gbufferAlbedo = tslTexture(texAlbedo, uvCoord).xyz;
+              const err = abs(arrayAlbedo.sub(gbufferAlbedo));
+              const color = select(
+                U_DEBUG_MODE.equal(MODE_ALBEDO_MATCH),
+                err,
+                arrayAlbedo,
+              );
+              outC.assign(vec4(color, 1.0));
+            }).Else(() => {
+              outC.assign(vec4(0.0, 0.0, 0.0, 1.0));
+            });
+          });
+
+          const flatPix = y.mul(int(W)).add(x);
+          overlayStore!.element(flatPix).assign(
+            validDepth.select(outC, vec4(0)),
+          );
+        })()
+          .compute(pixels)
+          .setName('Surfel Screen Debug Overlay (BVH Albedo)');
+      }
+
+      renderer.compute(debugComputeBvh!);
+      return;
+    }
 
     // pool storage
     const surfelAttr = pool.getSurfelAttr();
@@ -275,10 +455,6 @@ export function createSurfelScreenDebug(
     const surfelDepthAttr = pool.getSurfelDepthAttr();
     if (!surfelDepthAttr) return;
 
-    // upload camera uniforms
-    U_PROJ_INV.value.copy(camera.projectionMatrixInverse);
-    U_CAM_WORLD.value.copy(camera.matrixWorld);
-    U_CAM_POS.value.copy(camera.position);
     U_PREV_CAM_POS.value.copy(prevCameraPos);
     snap_to_surfel_grid_origin(U_GRID_ORIGIN.value, camera.position);
     U_FRAME.value = renderer.info.frame;
@@ -349,8 +525,8 @@ export function createSurfelScreenDebug(
       const MODE_RADIAL_TILE = int(SCREEN_DEBUG_MODES.RadialDepthTile);
 
       debugCompute = Fn(() => {
-        const include = includeSurfelDepth({ surfelDepth });
-        const tid = int(instanceIndex).add(include);
+        const includeDepth = includeSurfelDepth({ surfelDepth });
+        const tid = int(instanceIndex).add(includeDepth);
         const x = tid.mod(int(W));
         const y = tid.div(int(W));
         const uvCoord = vec2(

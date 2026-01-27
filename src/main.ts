@@ -580,6 +580,7 @@ renderer.setAnimationLoop(() => {
       gbuffer,
       surfelFindMissing,
       prevCameraPos,
+      sceneBVH,
     );
     renderer.render(scene, camera);
     screenDebug.renderOverlay(renderer);
