@@ -52,6 +52,10 @@ export type SurfelIntegratePass = {
     light: THREE.DirectionalLight,
     dispatchArgs: THREE.IndirectStorageBufferAttribute,
   ) => void;
+  setBaseSampleCount: (count: number) => void;
+  setAlbedoBoost: (boost: number) => void;
+  setGiScales: (fromDirect: number, fromIndirect: number) => void;
+  setEnvControls: (intensity: number, lod: number) => void;
 };
 
 // --- Grid helper functions (world → grid → hash) ---
@@ -180,28 +184,19 @@ const sampleDiffuseArray = wgslFn(/* wgsl */ `
   ) -> vec3f {
     let uv = uvIn;
 
-    let dims = textureDimensions(tex, 0); // vec2<u32>
-    let w = max(1u, dims.x);
-    let h = max(1u, dims.y);
-
     let layerCount = textureNumLayers(tex);
     let layer = clamp(layerIn, 0, i32(layerCount) - 1);
 
     // Unsampled texel load
+    // let dims = textureDimensions(tex, 0); // vec2<u32>
+    // let w = max(1u, dims.x);
+    // let h = max(1u, dims.y);
     // let x = i32(min(u32(uv.x * f32(w)), w - 1u));
     // let y = i32(min(u32(uv.y * f32(h)), h - 1u));
     // let c = textureLoad(tex, vec2i(x, y), layer, 0);
 
     let c = textureSampleLevel(tex, texSampler, uv, layer, 0.0);
     return c.rgb;
-  }
-`);
-
-const pcg = wgslFn(/* wgsl */ `
-  fn pcg(v: u32) -> u32 {
-      var state = v * 747796405u + 2891336453u;
-      var word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
-      return (word >> 22u) ^ word;
   }
 `);
 
@@ -225,36 +220,6 @@ const blueNoise4 = wgslFn(
 `,
   [consts],
 );
-
-const blueNoiseSeed = wgslFn(/* wgsl */ `
-  fn blueNoiseSeed(
-    surfelIndex: u32,
-    sampleIndex: u32,
-    tex: texture_2d<f32>,
-  ) -> u32 {
-    // One texel, 32bit seed
-    // Walk the texture in a scrambled fashion so different surfels
-    // don't stomp the same pattern.
-    let seq = (sampleIndex + surfelIndex * 4099u) & BLUE_NOISE_MASK;
-
-    let x = seq & (BLUE_NOISE_SIZE - 1u);
-    let y = seq >> 10u;                // 1024 = 2^10
-
-    // Fetch from the RGBA blue-noise texture
-    let c = textureLoad(tex, vec2u(x,y), 0);
-
-    // Pack 4x8-bit channels into a 32-bit seed
-    let r8 = u32(clamp(c.r * 255.0, 0.0, 255.0));
-    let g8 = u32(clamp(c.g * 255.0, 0.0, 255.0));
-    let b8 = u32(clamp(c.b * 255.0, 0.0, 255.0));
-    let a8 = u32(clamp(c.a * 255.0, 0.0, 255.0));
-
-    return (r8)
-        | (g8 << 8u)
-        | (b8 << 16u)
-        | (a8 << 24u);
-  }
-`);
 
 // ---------------------------------------------------------
 // 1. Basis + cosine/cone sampling
@@ -293,7 +258,7 @@ const sampleCosineHemisphereLocal = wgslFn(
 ); // NEW
 
 // ------------------------------------------------------------------
-// [SLG][CHANGED] Hemi-oct-square mapping (bijection hemi <-> square)
+// [SLG] Hemi-oct-square mapping (bijection hemi <-> square)
 // ------------------------------------------------------------------
 export const hemiOctSquareEncode = wgslFn(
   /* wgsl */ `
@@ -352,7 +317,7 @@ const hemiOctJacobian = wgslFn(/* wgsl */ `
   }
 `);
 
-// CHANGED: pdfSLG now works purely from uv in hemi-oct-square, no basis recompute. // CHANGED
+// pdfSLG works purely from uv in hemi-oct-square, no basis recompute
 const pdfSLG = wgslFn(
   /* wgsl */ `
   fn pdfSLG(
@@ -378,9 +343,9 @@ const pdfSLG = wgslFn(
   }
 `,
   [consts, hemiOctJacobian],
-); // CHANGED
+);
 
-// [SLG][CHANGED] Lobe axis in the SURFEL-LOCAL frame (no wasted cells)
+// [SLG] Lobe axis in the SURFEL-LOCAL frame (no wasted cells)
 const slgGetLobeAxisLocal = wgslFn(
   /* wgsl */ `
   fn slgGetLobeAxisLocal(idx: u32) -> vec3f {
@@ -463,7 +428,7 @@ fn runMSME(y: vec3f, dataIn: MSMEData, shortWindowBlend: f32) -> MSMEData {
 }`);
 
 // ------------------------------------------------------------------
-// [SLG][CHANGED] Sampling: choose lobe by weights, then sample a UNIFORM UV within that cell.
+// [SLG] Sampling: choose lobe by weights, then sample a UNIFORM UV within that cell.
 // ------------------------------------------------------------------
 const slgSampleLobeIndex = wgslFn(
   /* wgsl */ `
@@ -504,8 +469,8 @@ const slgSampleLobeIndex = wgslFn(
   [consts],
 );
 
-// [SLG][CHANGED] Update guiding weights by splatting luminance into the hemi-oct-square grid.
-// CHANGED: now takes `uv` directly (local-space-first), avoids basis recomputation. // CHANGED
+// [SLG] Update guiding weights by splatting luminance into the hemi-oct-square grid.
+// takes `uv` directly (local-space-first)
 const slgUpdateFromSample = wgslFn(
   /* wgsl */ `
   fn slgUpdateFromSample(
@@ -555,7 +520,7 @@ const slgUpdateFromSample = wgslFn(
   [consts],
 );
 
-// CHANGED: sampleGuidedDirection returns BOTH local direction + uv (local-space-first). // CHANGED
+// sampleGuidedDirection returns BOTH local direction + uv (local-space-first).
 const sampleGuidedDirection = wgslFn(
   /* wgsl */ `
   fn sampleGuidedDirection(
@@ -609,7 +574,7 @@ const sampleGuidedDirection = wgslFn(
     sampleCosineHemisphereLocal,
     slgSafeU01,
   ],
-); // CHANGED
+);
 
 const slgGetTotalMass = wgslFn(
   /* wgsl */ `
@@ -642,6 +607,10 @@ export function createSurfelIntegratePass(
   const U_READ_OFFSET = uniform(0);
   const U_WRITE_OFFSET = uniform(0);
   const U_GRID_ORIGIN = uniform(new THREE.Vector3());
+  const U_BASE_SAMPLE_COUNT = uniform(4);
+  const U_ALBEDO_BOOST = uniform(1.0);
+  const U_GI_FROM_DIRECT = uniform(1.0);
+  const U_GI_FROM_INDIRECT = uniform(1.0);
 
   const blueNoiseTexN = texture(blueNoiseTex);
   const envTexture = envTex ? texture(envTex).toInspector('Env') : null;
@@ -913,6 +882,10 @@ export function createSurfelIntegratePass(
           blueNoiseTex: texture_2d<f32>,
           readOffset: u32, writeOffset: u32,
           occParams: vec4f,
+          baseSampleCount: u32,
+          albedoBoost: f32,
+          giFromDirect: f32,
+          giFromIndirect: f32,
         ) -> void {
           let index = instanceIndex;
           // let total = atomicLoad(&poolMax[0]);
@@ -958,7 +931,7 @@ export function createSurfelIntegratePass(
           var validSamples = 0.0;
 
           // Adaptive based on MSME inconsistency
-          const baseCount = 4u;
+          let baseCount = max(1u, baseSampleCount);
           let boostCount = select(0u, 12u, msmeState.inconsistency > 0.3);
           var sampleCount = baseCount + boostCount;
 
@@ -966,10 +939,7 @@ export function createSurfelIntegratePass(
           // let warmup = (sinceBirth <= 2u) || (prevCount < 32.0);  // <-- tune threshold
           if (warmup) { sampleCount = 32u; }
 
-          var seed = blueNoiseSeed(index, frame, blueNoiseTex);
-          var sample0Lum = 0.0;
           var hitPos0 = s.posb.xyz;
-
           var debugFlag = 0.0;
 
           // NOTE: For debug - maybe use for real loop?
@@ -1007,6 +977,14 @@ export function createSurfelIntegratePass(
           let DEPTH_PROBE_STRIDE = 4u; // 4 => 25% of surfels per frame do 1 probe
           let doProbe = (((index ^ frame) & (DEPTH_PROBE_STRIDE - 1u)) == 0u);
 
+          // Common surfel data
+          var ray: Ray;
+          let pRelS = s.posb.xyz - camPos;
+          let sRad = surfel_radius_for_pos(pRelS);
+          let eps = radius_based_epsilon(sRad);
+          // Offset along normalized normal (from basis) for consistent epsilon.
+          ray.origin = s.posb.xyz + nW * eps;
+
           if (doProbe) {
             // pick a bin deterministically (covers all bins over time)
 
@@ -1023,11 +1001,6 @@ export function createSurfelIntegratePass(
             let dirLocalDepth = hemiOctSquareDecode(uvDepth);
             let rayDirDepth   = basis * dirLocalDepth;
 
-            var ray: Ray;
-            let pRelS = s.posb.xyz - camPos;
-            let sRad = surfel_radius_for_pos(pRelS);
-            let eps = radius_based_epsilon(sRad);
-            ray.origin = s.posb.xyz + nW * eps;
             ray.direction = rayDirDepth;
 
             let hitD = bvhIntersectFirstHit(ray);
@@ -1064,16 +1037,10 @@ export function createSurfelIntegratePass(
 
             if (mixPdf > 1e-6 && cosTerm > 0.0) {
               debugFlag = 1.0;
-              let pRelS = s.posb.xyz - camPos;
-              let sRad = surfel_radius_for_pos(pRelS);
-              let eps = radius_based_epsilon(sRad); 
               // Convert local dir -> world dir once using precomputed basis
               let rayDir = basis * dirLocal;
 
-              // Offset along normalized normal (from basis) for consistent epsilon.
-              let rayOrigin = s.posb.xyz + nW * eps; // Old: 0.002
-
-              var ray: Ray; ray.origin = rayOrigin; ray.direction = rayDir;
+              ray.direction = rayDir;
               let hit = bvhIntersectFirstHit(ray);
               var bounceLi = vec3f(0.0);
               
@@ -1086,9 +1053,6 @@ export function createSurfelIntegratePass(
               let dHit = clamp(hit.dist, 0.0, maxDepth);
               let dLearn = select(maxDepth, dHit, hit.didHit);
               update_surfel_depth2(index, uv, dLearn, dirLocal);
-              // update_surfel_depth_msm_stable(surfelDepth, index, uv, dLearn, maxDepth);
-              
-              // update_surfel_depth(surfelDepth, index, uv, dLearn, sampleCount);
               
               if (hit.didHit) {
                 let hitPoint  = ray.origin + ray.direction * hit.dist;
@@ -1098,19 +1062,24 @@ export function createSurfelIntegratePass(
                 // matId is constant per triangle because we made geometry non-indexed + filled per-tri.
                 let matId = i32(round(uvMat.z));
                 let hitUv = uvMat.xy;
-                let hitAlbedo = sampleDiffuseArray(diffuseTex, diffuseTexSampler, hitUv, matId);
+                var hitAlbedo = sampleDiffuseArray(diffuseTex, diffuseTexSampler, hitUv, matId);
+                let y = max(1e-4, dot(hitAlbedo, vec3f(0.2126, 0.7152, 0.0722)));
+                let y2 = 1.0 - pow(1.0 - y, max(0.0, albedoBoost));
+                let s = y2 / y;
+                hitAlbedo = clamp(hitAlbedo * s, vec3f(0.0), vec3f(1.0));
 
                 var shadowRay2: Ray; shadowRay2.origin = hitPoint + hitNormal * eps; 
                 shadowRay2.direction = lightDir;
                 let shadowHit2 = bvhIntersectFirstHit(shadowRay2);
                 if (!shadowHit2.didHit) {
                   let NdotL2 = max(0.0, dot(hitNormal, lightDir));
-                  bounceLi += lightColor * hitAlbedo * NdotL2 * 0.3183;
+                  bounceLi += lightColor * hitAlbedo * NdotL2 * (1.0 / PI) * giFromDirect;
                 }
                 let gi = lookupSurfelGI(hitPoint, hitNormal, camPos, gridOrigin, readOffset, occParams);
-                bounceLi += gi * hitAlbedo;
+                bounceLi += gi * hitAlbedo * giFromIndirect;
               } else {
-                let t = 0.5 * (rayDir.y + 1.0);
+                // Basic Sky
+                // let t = 0.5 * (rayDir.y + 1.0);
                 // bounceLi = mix(vec3f(0.05), vec3f(0.2), vec3f(t));
                 bounceLi = sampleEnvEquirect(rayDir, envTexture, envSampler, envLod) * envIntensity;
               }
@@ -1123,7 +1092,6 @@ export function createSurfelIntegratePass(
               let slgMassDiff = slgUpdateFromSample(index, uv, lum);
               slgMass += slgMassDiff;
               validSamples += 1.0;
-              if (i == 0u) { sample0Lum = calculate_luma(bounceLi); }
             }
           }
 
@@ -1206,25 +1174,21 @@ export function createSurfelIntegratePass(
           bvhIntersectFirstHit,
           getVertexAttribute,
 
-          pcg,
-          blueNoiseSeed,
           blueNoise4,
 
-          // CHANGED: basis computed once in-kernel, sampling/pdf/update now local-space-first. // CHANGED
-          getTangentBasis, // still needed
+          getTangentBasis,
 
-          // SLG changed bits
           hemiOctSquareEncode,
           hemiOctSquareDecode,
           hemiOctJacobian,
           slgGetLobeAxisLocal,
           slgClearForNewSurfel,
           slgGetTotalMass,
-          slgUpdateFromSample, // CHANGED signature
+          slgUpdateFromSample,
           slgSampleLobeIndex,
 
-          sampleGuidedDirection, // CHANGED return type/signature
-          pdfSLG, // CHANGED signature
+          sampleGuidedDirection,
+          pdfSLG,
 
           // cache lookup + color
           lookupSurfelGI,
@@ -1268,6 +1232,10 @@ export function createSurfelIntegratePass(
         readOffset: U_READ_OFFSET,
         writeOffset: U_WRITE_OFFSET,
         occParams: U_OCCLUSION_PARAMS,
+        baseSampleCount: U_BASE_SAMPLE_COUNT,
+        albedoBoost: U_ALBEDO_BOOST,
+        giFromDirect: U_GI_FROM_DIRECT,
+        giFromIndirect: U_GI_FROM_INDIRECT,
       });
 
       computeNode = computeCall
@@ -1278,5 +1246,21 @@ export function createSurfelIntegratePass(
     renderer.compute(computeNode, dispatchArgs);
   }
 
-  return { run };
+  return {
+    run,
+    setBaseSampleCount: (count: number) => {
+      U_BASE_SAMPLE_COUNT.value = Math.max(1, Math.floor(count));
+    },
+    setAlbedoBoost: (boost: number) => {
+      U_ALBEDO_BOOST.value = Math.max(0, boost);
+    },
+    setGiScales: (fromDirect: number, fromIndirect: number) => {
+      U_GI_FROM_DIRECT.value = Math.max(0, fromDirect);
+      U_GI_FROM_INDIRECT.value = Math.max(0, fromIndirect);
+    },
+    setEnvControls: (intensity: number, lod: number) => {
+      U_ENV_INTENSITY.value = Math.max(0, intensity);
+      U_ENV_LOD.value = Math.max(0, lod);
+    },
+  };
 }

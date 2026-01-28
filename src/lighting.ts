@@ -47,6 +47,8 @@ export function createLightControls(
     const r = 10;
     const lowY = 20.5; // Height of the "low circle"
 
+    // lightCfg.azimuthDeg = Math.sin(time/6) * 23;
+
     dirLight.position.x = Math.sin(time * lightCfg.speed) * r;
     dirLight.position.z = Math.cos(time * lightCfg.speed) * r;
     dirLight.position.y = lowY;
@@ -67,7 +69,7 @@ export function createLightControls(
     .onChange(updateLightFromAngles)
     .listen?.();
   folder
-    .add(lightCfg, 'intensity', 0, 10, 0.01)
+    .add(lightCfg, 'intensity', 0, 20, 0.01)
     .name('Intensity')
     .onChange(updateLightFromAngles)
     .listen?.();

@@ -18,12 +18,14 @@ export type OcclusionSettings = {
   varianceBleedScale: number;
 };
 
-const occlusionParams: OcclusionSettings = {
+export const DEFAULT_OCCLUSION_SETTINGS: OcclusionSettings = {
   shadowStrength: 1.2,
   bleedReduction: 0.2,
   grazingBiasScale: 0.25,
   varianceBleedScale: 0.15,
 };
+
+const occlusionParams: OcclusionSettings = { ...DEFAULT_OCCLUSION_SETTINGS };
 
 function syncOcclusionUniform() {
   U_OCCLUSION_PARAMS.value.set(
@@ -52,7 +54,7 @@ export const configureRadialDepthGUI = (gui) => {
 
   const shadowController = occlusionFolder
     .add(occlusionParams, 'shadowStrength', 0, 10, 0.1)
-    .name('Shadow strength')
+    .name('Strength')
     .onChange(update);
   const bleedController = occlusionFolder
     .add(occlusionParams, 'bleedReduction', 0, 1, 0.01)

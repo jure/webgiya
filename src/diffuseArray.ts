@@ -62,10 +62,11 @@ export function buildDiffuseArrayTexture(
   });
 
   const materialCount = Math.max(1, materials.length);
+  const arrayLayerCount = Math.max(2, materialCount);
 
   // 2) Create array render target for baking
   const renderTarget = new THREE.RenderTarget(layerSize, layerSize, {
-    depth: materialCount,
+    depth: arrayLayerCount,
     format: THREE.RGBAFormat,
     type: THREE.UnsignedByteType,
     colorSpace: THREE.SRGBColorSpace,
@@ -111,8 +112,8 @@ export function buildDiffuseArrayTexture(
   const prevMip = renderer.getActiveMipmapLevel();
   const fallbackColor = new THREE.Color(1, 1, 1);
 
-  for (let layer = 0; layer < materialCount; layer++) {
-    const mat = materials[layer];
+  for (let layer = 0; layer < arrayLayerCount; layer++) {
+    const mat = layer < materialCount ? materials[layer] : null;
     const baseColor = mat ? getMaterialColorLinear(mat) : fallbackColor;
     const map = mat ? getMaterialMap(mat) : null;
 

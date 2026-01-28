@@ -41,6 +41,7 @@ import { createIntegratorDispatchArgs } from './integratorDispatchArgs.ts';
 import {
   applyOcclusionSettings,
   configureRadialDepthGUI,
+  DEFAULT_OCCLUSION_SETTINGS,
 } from './surfelRadialDepth.ts';
 import { EXRLoader, HDRLoader } from 'three/examples/jsm/Addons.js';
 
@@ -193,6 +194,7 @@ screenDebug.configureGUI(gui);
 
 const { updateAnimation, updateLightFromAngles, lightCfg, setLight } =
   createLightControls(gui, dirLight);
+const defaultLightSettings = { ...lightCfg };
 
 const GI_MODES = {
   Direct: 'direct',
@@ -200,10 +202,11 @@ const GI_MODES = {
   Combined: 'combined',
 } as const;
 type GiMode = Exclude<NonNullable<SceneSettings['gi']>['mode'], undefined>;
-const giParams: { mode: GiMode; indirectIntensity: number } = {
+const defaultGiParams: { mode: GiMode; indirectIntensity: number } = {
   mode: GI_MODES.Combined,
   indirectIntensity: 1.0,
 };
+const giParams = { ...defaultGiParams };
 
 const giFolder = gui.addFolder('GI');
 let mustRebuildCompositeMaterial = true;
@@ -221,6 +224,72 @@ const giIndirectController = giFolder
   });
 giModeController.listen?.();
 giIndirectController.listen?.();
+
+const defaultIntegratorParams = { baseSampleCount: 4 };
+const integratorParams = { ...defaultIntegratorParams };
+const integratorFolder = gui.addFolder('Integrator');
+const baseSampleController = integratorFolder
+  .add(integratorParams, 'baseSampleCount', 1, 64, 1)
+  .name('Base Samples')
+  .onChange(() => {
+    surfelIntegrate?.setBaseSampleCount(integratorParams.baseSampleCount);
+  });
+baseSampleController.listen?.();
+const defaultGiTransportParams = {
+  envIntensity: 1.0,
+  envLod: 4.0,
+  giFromDirect: 1.0,
+  giFromIndirect: 1.0,
+  albedoBoost: 1.0,
+};
+const giTransportParams = { ...defaultGiTransportParams };
+const envIntensityController = integratorFolder
+  .add(giTransportParams, 'envIntensity', 0, 5, 0.05)
+  .name('Env GI Intensity')
+  .onChange(() => {
+    surfelIntegrate?.setEnvControls(
+      giTransportParams.envIntensity,
+      giTransportParams.envLod,
+    );
+  });
+envIntensityController.listen?.();
+const envLodController = integratorFolder
+  .add(giTransportParams, 'envLod', 0, 10, 0.25)
+  .name('Env GI LOD')
+  .onChange(() => {
+    surfelIntegrate?.setEnvControls(
+      giTransportParams.envIntensity,
+      giTransportParams.envLod,
+    );
+  });
+envLodController.listen?.();
+const giFromDirectController = integratorFolder
+  .add(giTransportParams, 'giFromDirect', 0, 4, 0.05)
+  .name('GI 1-bounce')
+  .onChange(() => {
+    surfelIntegrate?.setGiScales(
+      giTransportParams.giFromDirect,
+      giTransportParams.giFromIndirect,
+    );
+  });
+giFromDirectController.listen?.();
+const giFromIndirectController = integratorFolder
+  .add(giTransportParams, 'giFromIndirect', 0, 4, 0.05)
+  .name('GI From Indirect')
+  .onChange(() => {
+    surfelIntegrate?.setGiScales(
+      giTransportParams.giFromDirect,
+      giTransportParams.giFromIndirect,
+    );
+  });
+giFromIndirectController.listen?.();
+const albedoBoostController = integratorFolder
+  .add(giTransportParams, 'albedoBoost', 1, 4, 0.05)
+  .name('GI Albedo Boost')
+  .onChange(() => {
+    surfelIntegrate?.setAlbedoBoost(giTransportParams.albedoBoost);
+  });
+albedoBoostController.listen?.();
 
 configureRadialDepthGUI(gui);
 
@@ -249,11 +318,75 @@ function applyCameraSettings(settings?: NonNullable<SceneSettings['camera']>) {
   controls.update();
 }
 
+function applyIntegratorSettings(
+  settings?: NonNullable<SceneSettings['integrator']>,
+) {
+  if (!settings) return;
+  if (settings.baseSampleCount !== undefined) {
+    integratorParams.baseSampleCount = settings.baseSampleCount;
+    surfelIntegrate?.setBaseSampleCount(integratorParams.baseSampleCount);
+  }
+}
+
+function applyTransportSettings(
+  settings?: NonNullable<SceneSettings['transport']>,
+) {
+  if (!settings) return;
+  if (settings.envIntensity !== undefined)
+    giTransportParams.envIntensity = settings.envIntensity;
+  if (settings.envLod !== undefined) giTransportParams.envLod = settings.envLod;
+  if (settings.giFromDirect !== undefined)
+    giTransportParams.giFromDirect = settings.giFromDirect;
+  if (settings.giFromIndirect !== undefined)
+    giTransportParams.giFromIndirect = settings.giFromIndirect;
+  if (settings.albedoBoost !== undefined)
+    giTransportParams.albedoBoost = settings.albedoBoost;
+
+  surfelIntegrate?.setEnvControls(
+    giTransportParams.envIntensity,
+    giTransportParams.envLod,
+  );
+  surfelIntegrate?.setGiScales(
+    giTransportParams.giFromDirect,
+    giTransportParams.giFromIndirect,
+  );
+  surfelIntegrate?.setAlbedoBoost(giTransportParams.albedoBoost);
+}
+
 function applySceneSettings(settings?: SceneSettings) {
   if (settings?.gi) applyGiSettings(settings.gi);
   if (settings?.occlusion) applyOcclusionSettings(settings.occlusion);
   if (settings?.light) applyLightSettings(settings.light);
+  if (settings?.integrator) applyIntegratorSettings(settings.integrator);
+  if (settings?.transport) applyTransportSettings(settings.transport);
   applyCameraSettings(settings?.camera);
+}
+
+function resetParamsToDefaults() {
+  giParams.mode = defaultGiParams.mode;
+  giParams.indirectIntensity = defaultGiParams.indirectIntensity;
+  mustRebuildCompositeMaterial = true;
+
+  integratorParams.baseSampleCount = defaultIntegratorParams.baseSampleCount;
+  giTransportParams.envIntensity = defaultGiTransportParams.envIntensity;
+  giTransportParams.envLod = defaultGiTransportParams.envLod;
+  giTransportParams.giFromDirect = defaultGiTransportParams.giFromDirect;
+  giTransportParams.giFromIndirect = defaultGiTransportParams.giFromIndirect;
+  giTransportParams.albedoBoost = defaultGiTransportParams.albedoBoost;
+
+  applyOcclusionSettings(DEFAULT_OCCLUSION_SETTINGS);
+  Object.assign(lightCfg, defaultLightSettings);
+
+  surfelIntegrate?.setBaseSampleCount(integratorParams.baseSampleCount);
+  surfelIntegrate?.setEnvControls(
+    giTransportParams.envIntensity,
+    giTransportParams.envLod,
+  );
+  surfelIntegrate?.setGiScales(
+    giTransportParams.giFromDirect,
+    giTransportParams.giFromIndirect,
+  );
+  surfelIntegrate?.setAlbedoBoost(giTransportParams.albedoBoost);
 }
 
 let sceneBVH: SceneBVHBundle | null = null;
@@ -282,12 +415,23 @@ async function loadScene(sceneDef: SceneDefinition) {
 
   const suv = findSunPositionWeighted(envTex);
   console.log('Sun found at UV', suv);
+  resetParamsToDefaults();
   setLightAnglesFromEnvMapSunUVLocation(suv[0], suv[1]);
 
   applySceneSettings(sceneDef.settings);
   updateLightFromAngles();
 
   surfelIntegrate = createSurfelIntegratePass(blueNoise, envTex);
+  surfelIntegrate.setBaseSampleCount(integratorParams.baseSampleCount);
+  surfelIntegrate.setEnvControls(
+    giTransportParams.envIntensity,
+    giTransportParams.envLod,
+  );
+  surfelIntegrate.setGiScales(
+    giTransportParams.giFromDirect,
+    giTransportParams.giFromIndirect,
+  );
+  surfelIntegrate.setAlbedoBoost(giTransportParams.albedoBoost);
 
   try {
     await sceneDef.populate(scene, dirLight);
@@ -337,6 +481,16 @@ let isSyncingSceneSelection = false;
 function normalizeSceneId(value: string): string {
   if (sceneIdSet.has(value)) return value;
   return sceneIdByLabel.get(value) ?? value;
+}
+
+function getSceneIdFromQuery(): string | null {
+  if (!defaultSceneId) return null;
+  const params = new URLSearchParams(window.location.search);
+  const raw =
+    params.get('scene') ?? params.get('sceneId') ?? params.get('scene_id');
+  if (!raw) return defaultSceneId;
+  const normalized = normalizeSceneId(raw);
+  return sceneIdSet.has(normalized) ? normalized : defaultSceneId;
 }
 
 const sceneSwitcher = createSceneSwitcher(
@@ -394,8 +548,10 @@ function selectScene(sceneId: string) {
   void loadSceneById(normalized);
 }
 
-if (defaultSceneId) {
-  await loadSceneById(defaultSceneId);
+const initialSceneId = getSceneIdFromQuery();
+if (initialSceneId) {
+  syncSceneSelection(initialSceneId);
+  await loadSceneById(initialSceneId);
 }
 
 const surfelResolve = createSurfelGIResolvePass(uniformGrid, surfelPool);

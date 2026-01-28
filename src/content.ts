@@ -36,8 +36,8 @@ export function populateWithSponza(
     });
     scene.add(gltf.scene);
 
-    dirLight.shadow.mapSize.width = 2048;
-    dirLight.shadow.mapSize.height = 2048;
+    dirLight.shadow.mapSize.width = 4096;
+    dirLight.shadow.mapSize.height = 4096;
     dirLight.shadow.camera.near = 0.1;
     dirLight.shadow.camera.far = 100;
     dirLight.shadow.camera.top = 15;
@@ -297,6 +297,58 @@ export function populateCornellScene(
   scene: THREE.Scene,
   dirLight: THREE.DirectionalLight,
 ) {
+  buildCornellScene(scene, dirLight, {
+    red: new THREE.MeshPhysicalMaterial({ color: '#ff0000' }),
+    green: new THREE.MeshPhysicalMaterial({ color: '#00ff00' }),
+    white: new THREE.MeshPhysicalMaterial({ color: '#fff' }),
+  });
+}
+
+// Scene to test if textures are being read with correct luminance.
+export function populateCornellSceneTextured(
+  scene: THREE.Scene,
+  dirLight: THREE.DirectionalLight,
+) {
+  const makeSolidTexture = (hex: number) => {
+    const color = new THREE.Color(hex);
+    const data = new Uint8Array([
+      Math.round(color.r * 255),
+      Math.round(color.g * 255),
+      Math.round(color.b * 255),
+      255,
+    ]);
+    const tex = new THREE.DataTexture(data, 1, 1);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.minFilter = THREE.LinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+    tex.flipY = false;
+    tex.needsUpdate = true;
+    return tex;
+  };
+
+  const redMap = makeSolidTexture(0xff0000);
+  const greenMap = makeSolidTexture(0x00ff00);
+  const whiteMap = makeSolidTexture(0xffffff);
+
+  buildCornellScene(scene, dirLight, {
+    red: new THREE.MeshPhysicalMaterial({ color: 0xffffff, map: redMap }),
+    green: new THREE.MeshPhysicalMaterial({ color: 0xffffff, map: greenMap }),
+    white: new THREE.MeshPhysicalMaterial({ color: 0xffffff, map: whiteMap }),
+  });
+}
+
+type CornellMaterials = {
+  red: THREE.Material;
+  green: THREE.Material;
+  white: THREE.Material;
+};
+
+function buildCornellScene(
+  scene: THREE.Scene,
+  dirLight: THREE.DirectionalLight,
+  materials: CornellMaterials,
+) {
   const BOX_WIDTH = 2;
   const BOX_DEPTH = 2;
   const BOX_HEIGHT = 1.5;
@@ -304,11 +356,9 @@ export function populateCornellScene(
 
   const group = new THREE.Group();
 
-  const redWallMaterial = new THREE.MeshPhysicalMaterial({ color: '#ff0000' });
-  const greenWallMaterial = new THREE.MeshPhysicalMaterial({
-    color: '#00ff00',
-  });
-  const whiteMaterial = new THREE.MeshPhysicalMaterial({ color: '#fff' });
+  const redWallMaterial = materials.red;
+  const greenWallMaterial = materials.green;
+  const whiteMaterial = materials.white;
 
   // Floor (0.1 thick, inner face at y = 0)
   const floor = new THREE.Mesh(
@@ -760,6 +810,16 @@ export type SceneSettings = {
   light?: Partial<LightSettings>;
   occlusion?: Partial<OcclusionSettings>;
   camera?: SceneCameraSettings;
+  integrator?: {
+    baseSampleCount?: number;
+  };
+  transport?: {
+    envIntensity?: number;
+    envLod?: number;
+    giFromDirect?: number;
+    giFromIndirect?: number;
+    albedoBoost?: number;
+  };
 };
 
 export type SceneDefinition = {
@@ -791,6 +851,23 @@ export const SCENE_PRESETS: SceneDefinition[] = [
       populateCornellScene(scene, dirLight);
     },
   },
+  // {
+  //   id: 'cornell-box-textured',
+  //   label: 'Cornell Box (Textured)',
+  //   hdr: `${baseUrl}exr/pizzo_pernice_puresky_2k.hdr`,
+  //   settings: {
+  //     camera: {
+  //       position: new THREE.Vector3(0, 2.3, 11),
+  //       target: new THREE.Vector3(0, 2.3, 1),
+  //     },
+  //     occlusion: {
+  //       shadowStrength: 0.5,
+  //     },
+  //   },
+  //   populate: async (scene, dirLight) => {
+  //     populateCornellSceneTextured(scene, dirLight);
+  //   },
+  // },
   {
     id: 'leonardo',
     label: 'Leonardo',
@@ -886,6 +963,11 @@ export const SCENE_PRESETS: SceneDefinition[] = [
       },
       gi: {
         indirectIntensity: 1.7,
+      },
+      transport: {
+        giFromDirect: 2,
+        giFromIndirect: 2.3,
+        albedoBoost: 1.2
       },
       camera: {
         position: new THREE.Vector3(5, 4, -0.5),
