@@ -15,6 +15,7 @@ import {
   min,
   normalize,
   Loop,
+  vec3,
 } from 'three/tsl';
 import type { SurfelPool } from './surfelPool';
 import { SurfelMoments, SurfelStruct } from './surfelPool';
@@ -148,10 +149,10 @@ export function createSurfelAllocatePass(): SurfelAllocatePass {
             // [RADIAL DEPTH] Clear this surfel's 4x4 tile in the buffer
             // ----------------------------------------------------------
             const tileTexels = int(SURFEL_DEPTH_TEXELS * SURFEL_DEPTH_TEXELS);
-            const base = surfelIdx.mul(tileTexels);
+            const depthBase = surfelIdx.mul(tileTexels);
 
             Loop(tileTexels, ({ i }) => {
-              surfelDepth.element(base.add(i)).assign(vec4(0.0, 0.0, 0.0, 0.0));
+              surfelDepth.element(depthBase.add(i)).assign(vec4(0.0, 0.0, 0.0, 0.0));
             });
 
             // Read the Parent ID (passed from FindMissing)
@@ -270,11 +271,10 @@ export function createSurfelAllocatePass(): SurfelAllocatePass {
                 .assign(vec4(1.0, 1.0, 1.0, 1.0));
             });
 
+          }).Else(() => {
             // Revert counter if we overflowed (Cleanup)
-            If(withinCap.not(), () => {
-              atomicAdd(poolAlloc.element(0), int(-1));
-            });
-          });
+            atomicAdd(poolAlloc.element(0), int(-1));
+          })
         });
       })()
         .compute(Math.max(1, tileCount))
