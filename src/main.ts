@@ -565,28 +565,28 @@ const scenePass = pass(scene, camera);
 scenePass.setMRT(
   mrt({
     output: output,
-    velocity: velocity,
+    // velocity: velocity,
   }),
 );
 
 const scenePassColor = scenePass.getTextureNode('output').toInspector('Color');
-const scenePassDepth = scenePass
-  .getTextureNode('depth')
-  .toInspector('Depth', () => {
-    return scenePass.getLinearDepthNode();
-  });
+// const scenePassDepth = scenePass
+//   .getTextureNode('depth')
+//   .toInspector('Depth', () => {
+//     return scenePass.getLinearDepthNode();
+//   });
 
-const scenePassVelocity = scenePass
-  .getTextureNode('velocity')
-  .toInspector('Velocity');
+// const scenePassVelocity = scenePass
+//   .getTextureNode('velocity')
+//   .toInspector('Velocity');
 
-const traaNode = traa(
-  scenePassColor,
-  scenePassDepth,
-  scenePassVelocity,
-  camera,
-);
-postProcessing.outputNode = traaNode;
+// const traaNode = traa(
+//   scenePassColor,
+//   scenePassDepth,
+//   scenePassVelocity,
+//   camera,
+// );
+// postProcessing.outputNode = traaNode;
 
 window.addEventListener('resize', () => {
   const w = window.innerWidth;
