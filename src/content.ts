@@ -488,7 +488,7 @@ export async function populateBeastScene(
 
   const loader = new GLTFLoader();
   loader.setDRACOLoader(draco);
-  const whiteMaterial = new THREE.MeshPhysicalMaterial({ color: '#fff' });
+  const whiteMaterial = new THREE.MeshPhysicalMaterial({ color: '#999' });
 
   //brutalist_interior_vr_room_baked.glb
   // loader.load('/models/canyon.glb', (gltf) => {
@@ -997,6 +997,11 @@ export const SCENE_PRESETS: SceneDefinition[] = [
       },
       gi: {
         indirectIntensity: 1.4,
+      },
+      transport: {
+        giFromDirect: 2,
+        giFromIndirect: 2.3,
+        albedoBoost: 1.2
       },
       camera: {
         position: new THREE.Vector3(4.2, 0.5, -0.5),
