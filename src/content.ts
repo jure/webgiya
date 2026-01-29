@@ -986,8 +986,8 @@ export const SCENE_PRESETS: SceneDefinition[] = [
     settings: {
       light: {
         intensity: 10,
-        azimuthDeg: 13.4,
-        elevationDeg: 51.6,
+        azimuthDeg: -7.7,
+        elevationDeg: 74.9,
       },
       occlusion: {
         shadowStrength: 0.6,
