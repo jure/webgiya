@@ -1,6 +1,6 @@
 // gbuffer.ts
 import * as THREE from 'three/webgpu';
-import { mrt, diffuseColor, vec4, normalWorldGeometry } from 'three/tsl';
+import { mrt, diffuseColor, vec4, normalWorldGeometry, normalWorld } from 'three/tsl';
 
 export type GBufferBundle = {
   target: THREE.RenderTarget;
@@ -34,8 +34,8 @@ export function createGBuffer(renderer: THREE.WebGPURenderer): GBufferBundle {
 
   // Define the MRT
   const sceneMRT = mrt({
-    // TODO: Use shading normals where appropriate?
-    normal: normalWorldGeometry.mul(0.5).add(0.5),
+    // TODO: Use shading or geometry normals?
+    normal: normalWorld.mul(0.5).add(0.5),
     diffuseColor: vec4(diffuseColor.rgb, 1.0),
   });
 
